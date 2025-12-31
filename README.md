@@ -18,6 +18,49 @@ A Redis/Valkey-backed task queue backend for Django 6.0's built-in task framewor
 - Django Admin integration for task monitoring and management
 - HTTP endpoints for external triggers (webhooks, Cloud Scheduler, etc.)
 
+## Architecture
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant Backend as RedisTaskBackend
+    participant Redis as Redis/Valkey
+    participant Worker as Worker Process
+
+    Note over App,Worker: Task Enqueue
+    App->>Backend: task.enqueue(args, kwargs)
+    Backend->>Backend: Validate & serialize args
+    Backend->>Redis: HSET task data (status=READY)
+    Backend->>Redis: XADD to priority stream
+    Redis-->>Backend: Message ID
+    Backend-->>App: TaskResult (id, status=READY)
+
+    Note over App,Worker: Task Execution
+    Worker->>Redis: XREADGROUP (consumer group)<br/>(blocks waiting for messages)
+    Redis-->>Worker: Message with task_id
+    Worker->>Redis: HGET task data
+    Redis-->>Worker: Task data
+    Worker->>Redis: HSET status=RUNNING
+    Worker->>Worker: Execute task function
+    alt Success
+        Worker->>Redis: HSET status=SUCCESSFUL,<br/>return_value, finished_at
+    else Failure
+        Worker->>Redis: HSET status=FAILED,<br/>errors, finished_at
+    end
+    Worker->>Redis: XACK (acknowledge message)
+
+    Note over App,Worker: Crash Recovery
+    Worker->>Redis: XAUTOCLAIM stale messages<br/>(claim_timeout exceeded)
+    Redis-->>Worker: Reclaimed messages
+    Worker->>Worker: Re-execute tasks
+
+    Note over App,Worker: Result Retrieval (Optional)
+    App->>Backend: backend.get_result(task_id)
+    Backend->>Redis: HGETALL task data
+    Redis-->>Backend: Task data
+    Backend-->>App: TaskResult (status, return_value, errors)
+```
+
 ## Requirements
 
 - Python 3.12+
