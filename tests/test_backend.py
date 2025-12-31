@@ -3,7 +3,6 @@ Tests for RedisTaskBackend.
 """
 
 import pytest
-
 from django.tasks.base import TaskResultStatus
 
 
@@ -111,17 +110,16 @@ class TestRedisTaskBackend:
 
     def test_get_status_counts(self, redis_backend, clean_redis):
         """Test getting status counts."""
-        from tests.tasks import simple_task, failing_task
+        from tests.tasks import failing_task, simple_task
 
         # Create tasks in different states
         result1 = simple_task.enqueue(1, 1)
-        result2 = simple_task.enqueue(2, 2)
+        simple_task.enqueue(2, 2)  # result2 remains READY
         result3 = failing_task.enqueue()
 
         # Run some tasks
         redis_backend.run_task(result1.id)  # SUCCESSFUL
         redis_backend.run_task(result3.id)  # FAILED
-        # result2 remains READY
 
         counts = redis_backend.get_status_counts()
 

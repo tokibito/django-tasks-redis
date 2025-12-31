@@ -4,7 +4,6 @@ pytest configuration and fixtures for django-tasks-redis tests.
 
 import pytest
 import redis as redis_lib
-
 from django.tasks import task_backends
 
 

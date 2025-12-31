@@ -3,7 +3,6 @@ Tests for executor module.
 """
 
 import pytest
-
 from django.tasks.base import TaskResultStatus
 
 from django_tasks_redis import executor
@@ -127,7 +126,7 @@ class TestExecutor:
 
     def test_get_task_counts(self, clean_redis):
         """Test getting task counts by status."""
-        from tests.tasks import simple_task, failing_task
+        from tests.tasks import failing_task, simple_task
 
         simple_task.enqueue(1, 1)
         simple_task.enqueue(2, 2)
