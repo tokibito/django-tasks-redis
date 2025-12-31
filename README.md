@@ -90,12 +90,15 @@ INSTALLED_APPS = [
 TASKS = {
     "default": {
         "BACKEND": "django_tasks_redis.RedisTaskBackend",
+        "QUEUES": [],  # Empty list = allow all queue names
         "OPTIONS": {
             "REDIS_URL": "redis://localhost:6379/0",
         },
     },
 }
 ```
+
+> **Note**: `QUEUES` controls which queue names are allowed. If omitted, only `"default"` queue is allowed. Set `QUEUES: []` (empty list) to allow all queue names, or specify explicit names like `["default", "emails"]`.
 
 3. Define a task:
 
