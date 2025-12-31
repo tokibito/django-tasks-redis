@@ -3,7 +3,6 @@ Management command to run Redis task worker.
 """
 
 import signal
-import sys
 import time
 
 from django.core.management.base import BaseCommand

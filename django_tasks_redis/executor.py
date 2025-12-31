@@ -31,8 +31,6 @@ from .utils import (
     get_result_key,
     get_results_index_key,
     priority_to_level,
-    serialize_datetime,
-    serialize_json,
 )
 
 
