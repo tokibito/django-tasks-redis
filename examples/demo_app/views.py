@@ -1,131 +1,118 @@
-"""
-Views for the demo application.
-"""
+"""Demo app views."""
+
+from datetime import timedelta
 
 from django.http import JsonResponse
-from django.shortcuts import render
-from django.tasks import task_backends
+from django.shortcuts import redirect, render
+from django.utils import timezone
+from django.views.decorators.http import require_POST
+
+from django_tasks_redis import executor
 
 from . import tasks
 
 
 def index(request):
-    """Home page with task submission form."""
-    return render(request, "demo_app/index.html")
+    """Task list and enqueue form."""
+    recent_tasks, total = executor.get_tasks(limit=20)
+    return render(request, "demo_app/index.html", {"tasks": recent_tasks})
 
 
+@require_POST
 def enqueue_add(request):
-    """Enqueue an add_numbers task."""
-    x = int(request.GET.get("x", 1))
-    y = int(request.GET.get("y", 2))
-
+    """Enqueue add numbers task."""
+    x = int(request.POST.get("x", 0))
+    y = int(request.POST.get("y", 0))
     result = tasks.add_numbers.enqueue(x, y)
-
-    return JsonResponse(
-        {
-            "task_id": result.id,
-            "status": result.status,
-            "message": f"Enqueued add_numbers({x}, {y})",
-        }
-    )
+    return redirect("result", task_id=result.id)
 
 
-def enqueue_slow(request):
-    """Enqueue a slow_calculation task."""
-    seconds = int(request.GET.get("seconds", 2))
-
-    result = tasks.slow_calculation.enqueue(seconds)
-
-    return JsonResponse(
-        {
-            "task_id": result.id,
-            "status": result.status,
-            "message": f"Enqueued slow_calculation({seconds})",
-        }
-    )
-
-
-def enqueue_failing(request):
-    """Enqueue a failing_task."""
-    result = tasks.failing_task.enqueue()
-
-    return JsonResponse(
-        {
-            "task_id": result.id,
-            "status": result.status,
-            "message": "Enqueued failing_task()",
-        }
-    )
-
-
+@require_POST
 def enqueue_email(request):
-    """Enqueue a send_email task."""
-    to = request.GET.get("to", "test@example.com")
-    subject = request.GET.get("subject", "Test Subject")
-    body = request.GET.get("body", "Test Body")
-
-    result = tasks.send_email.enqueue(to, subject, body)
-
-    return JsonResponse(
-        {
-            "task_id": result.id,
-            "status": result.status,
-            "message": f"Enqueued send_email to {to}",
-        }
-    )
+    """Enqueue email task."""
+    to = request.POST.get("to", "test@example.com")
+    subject = request.POST.get("subject", "Test Subject")
+    body = request.POST.get("body", "Test Body")
+    result = tasks.send_email_task.enqueue(to, subject, body)
+    return redirect("result", task_id=result.id)
 
 
-def task_result(request, task_id):
-    """Get a task result by ID."""
-    backend = task_backends["default"]
+@require_POST
+def enqueue_process(request):
+    """Enqueue data processing task."""
+    data_size = int(request.POST.get("data_size", 100))
+    result = tasks.process_data.enqueue(data_size)
+    return redirect("result", task_id=result.id)
 
-    try:
-        result = backend.get_result(task_id)
-        return render(
-            request,
-            "demo_app/result.html",
+
+@require_POST
+def enqueue_failing(request):
+    """Enqueue failing task."""
+    result = tasks.failing_task.enqueue()
+    return redirect("result", task_id=result.id)
+
+
+@require_POST
+def enqueue_priority(request):
+    """Enqueue priority test tasks."""
+    # 3 low priority tasks
+    tasks.low_priority_cleanup.enqueue()
+    tasks.low_priority_cleanup.enqueue()
+    tasks.low_priority_cleanup.enqueue()
+    # 1 high priority task
+    result = tasks.high_priority_report.enqueue("Priority Test Report")
+    return redirect("result", task_id=result.id)
+
+
+@require_POST
+def enqueue_delayed(request):
+    """Enqueue delayed task."""
+    delay_seconds = int(request.POST.get("delay", 30))
+    run_after = timezone.now() + timedelta(seconds=delay_seconds)
+    delayed_task = tasks.add_numbers.using(run_after=run_after)
+    result = delayed_task.enqueue(100, 200)
+    return redirect("result", task_id=result.id)
+
+
+@require_POST
+def enqueue_context(request):
+    """Enqueue context-aware task."""
+    message = request.POST.get("message", "Hello from context task!")
+    result = tasks.context_aware_task.enqueue(message)
+    return redirect("result", task_id=result.id)
+
+
+@require_POST
+def enqueue_newsletter(request):
+    """Enqueue newsletter task (uses 'emails' queue)."""
+    subscriber_count = int(request.POST.get("subscriber_count", 100))
+    result = tasks.newsletter_task.enqueue(subscriber_count)
+    return redirect("result", task_id=result.id)
+
+
+def result(request, task_id):
+    """Display task result."""
+    task_data = executor.get_task_by_id(str(task_id))
+    return render(request, "demo_app/result.html", {"task": task_data})
+
+
+def task_list_json(request):
+    """Return all tasks status as JSON."""
+    recent_tasks, total = executor.get_tasks(limit=50)
+    tasks_data = []
+    for t in recent_tasks:
+        tasks_data.append(
             {
-                "result": result,
-            },
-        )
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=404)
-
-
-def task_status_json(request, task_id):
-    """Get task status as JSON."""
-    backend = task_backends["default"]
-
-    try:
-        result = backend.get_result(task_id)
-        return JsonResponse(
-            {
-                "id": result.id,
-                "status": result.status,
-                "enqueued_at": result.enqueued_at.isoformat() if result.enqueued_at else None,
-                "started_at": result.started_at.isoformat() if result.started_at else None,
-                "finished_at": result.finished_at.isoformat() if result.finished_at else None,
-                "return_value": result._return_value if result.status == "SUCCESSFUL" else None,
-                "errors": [
-                    {"class": e.exception_class_path, "traceback": e.traceback}
-                    for e in result.errors
-                ],
+                "id": t.get("task_id"),
+                "task_path": t.get("task_path"),
+                "status": t.get("status"),
+                "priority": t.get("priority"),
+                "queue_name": t.get("queue_name"),
+                "enqueued_at": t.get("enqueued_at"),
+                "started_at": t.get("started_at"),
+                "finished_at": t.get("finished_at"),
+                "return_value": t.get("return_value_json"),
+                "errors": t.get("errors_json"),
             }
         )
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=404)
-
-
-def queue_stats(request):
-    """Get queue statistics."""
-    from django_tasks_redis import executor
-
-    stats = executor.get_queue_stats()
-    counts = executor.get_task_counts()
-
-    return JsonResponse(
-        {
-            "stats": stats,
-            "counts": {str(k): v for k, v in counts.items()},
-        }
-    )
+    return JsonResponse({"tasks": tasks_data})

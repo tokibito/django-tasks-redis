@@ -45,7 +45,11 @@ class RedisTaskBackend(BaseTaskBackend):
         self._client = None
 
         # Settings with REDIS_ prefix
-        self.result_ttl = self.options.get("REDIS_RESULT_TTL", 604800)  # 7 days
+        self.result_ttl = self.options.get("REDIS_RESULT_TTL", 2592000)  # 30 days
+        # TTL for completed tasks (SUCCESSFUL/FAILED), defaults to result_ttl
+        self.completed_task_ttl = self.options.get(
+            "REDIS_COMPLETED_TASK_TTL", self.result_ttl
+        )
         self.key_prefix = self.options.get("REDIS_KEY_PREFIX", "django_tasks")
         self.consumer_group = self.options.get(
             "REDIS_CONSUMER_GROUP", "django_tasks_workers"
@@ -309,6 +313,10 @@ class RedisTaskBackend(BaseTaskBackend):
                 },
             )
 
+            # Set TTL for completed task
+            if self.completed_task_ttl > 0:
+                client.expire(result_key, self.completed_task_ttl)
+
             # Refresh and return result
             task_data = client.hgetall(result_key)
             final_result = self._data_to_result(task_data, task)
@@ -343,6 +351,10 @@ class RedisTaskBackend(BaseTaskBackend):
                     "finished_at": finished_at,
                 },
             )
+
+            # Set TTL for completed task
+            if self.completed_task_ttl > 0:
+                client.expire(result_key, self.completed_task_ttl)
 
             # Refresh and return result
             task_data = client.hgetall(result_key)

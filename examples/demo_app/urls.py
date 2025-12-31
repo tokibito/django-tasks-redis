@@ -1,20 +1,19 @@
-"""
-URL patterns for demo app.
-"""
+"""demo_app URL configuration."""
 
 from django.urls import path
 
 from . import views
 
-app_name = "demo_app"
-
 urlpatterns = [
     path("", views.index, name="index"),
     path("enqueue/add/", views.enqueue_add, name="enqueue_add"),
-    path("enqueue/slow/", views.enqueue_slow, name="enqueue_slow"),
-    path("enqueue/failing/", views.enqueue_failing, name="enqueue_failing"),
     path("enqueue/email/", views.enqueue_email, name="enqueue_email"),
-    path("result/<uuid:task_id>/", views.task_result, name="task_result"),
-    path("status/<uuid:task_id>/", views.task_status_json, name="task_status"),
-    path("stats/", views.queue_stats, name="queue_stats"),
+    path("enqueue/process/", views.enqueue_process, name="enqueue_process"),
+    path("enqueue/failing/", views.enqueue_failing, name="enqueue_failing"),
+    path("enqueue/priority/", views.enqueue_priority, name="enqueue_priority"),
+    path("enqueue/delayed/", views.enqueue_delayed, name="enqueue_delayed"),
+    path("enqueue/context/", views.enqueue_context, name="enqueue_context"),
+    path("enqueue/newsletter/", views.enqueue_newsletter, name="enqueue_newsletter"),
+    path("result/<uuid:task_id>/", views.result, name="result"),
+    path("tasks/json/", views.task_list_json, name="task_list_json"),
 ]

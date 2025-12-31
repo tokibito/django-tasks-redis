@@ -1,0 +1,220 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}{% trans "Task Detail" %} | {{ block.super }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% trans "Home" %}</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_label|capfirst }}</a>
+    &rsaquo; <a href="{% url 'admin:django_tasks_redis_redistask_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; {% trans "Task Detail" %}
+</div>
+{% endblock %}
+
+{% block content %}
+<style>
+    .task-detail {
+        background: #fff;
+        padding: 20px;
+        border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .task-detail h2 {
+        margin-top: 0;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #eee;
+        color: #417690;
+    }
+    .task-detail table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .task-detail th {
+        text-align: left;
+        padding: 10px;
+        background: #f8f9fa;
+        border-bottom: 1px solid #eee;
+        width: 180px;
+        vertical-align: top;
+    }
+    .task-detail td {
+        padding: 10px;
+        border-bottom: 1px solid #eee;
+    }
+    .status-badge {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 3px;
+        color: white;
+        font-size: 12px;
+        font-weight: bold;
+    }
+    .status-READY { background-color: #6c757d; }
+    .status-RUNNING { background-color: #007bff; }
+    .status-SUCCESSFUL { background-color: #28a745; }
+    .status-FAILED { background-color: #dc3545; }
+    .json-content {
+        background: #f5f5f5;
+        padding: 10px;
+        border-radius: 4px;
+        font-family: monospace;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+    .error-content {
+        background: #fee;
+        border: 1px solid #fcc;
+        padding: 10px;
+        border-radius: 4px;
+        font-family: monospace;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        max-height: 300px;
+        overflow-y: auto;
+        color: #c00;
+    }
+    .back-link {
+        display: inline-block;
+        margin-top: 20px;
+        padding: 8px 15px;
+        background: #417690;
+        color: white !important;
+        text-decoration: none;
+        border-radius: 4px;
+    }
+    .back-link:hover {
+        background: #205067;
+        color: white !important;
+    }
+    .back-link:visited {
+        color: white !important;
+    }
+    .not-found {
+        text-align: center;
+        padding: 40px;
+        color: #666;
+    }
+</style>
+
+{% if task %}
+<div class="task-detail">
+    <h2>{% trans "Task Information" %}</h2>
+    <table>
+        <tr>
+            <th>{% trans "Task ID" %}</th>
+            <td><code>{{ task.task_id }}</code></td>
+        </tr>
+        <tr>
+            <th>{% trans "Task Path" %}</th>
+            <td><code>{{ task.task_path }}</code></td>
+        </tr>
+        <tr>
+            <th>{% trans "Status" %}</th>
+            <td><span class="status-badge status-{{ task.status }}">{{ task.status }}</span></td>
+        </tr>
+        <tr>
+            <th>{% trans "Priority" %}</th>
+            <td>{{ task.priority }}</td>
+        </tr>
+        <tr>
+            <th>{% trans "Queue Name" %}</th>
+            <td>{{ task.queue_name }}</td>
+        </tr>
+        <tr>
+            <th>{% trans "Backend" %}</th>
+            <td>{{ task.backend_name|default:"default" }}</td>
+        </tr>
+    </table>
+
+    <h2>{% trans "Timestamps" %}</h2>
+    <table>
+        <tr>
+            <th>{% trans "Enqueued At" %}</th>
+            <td>{{ task.enqueued_at|default:"-" }}</td>
+        </tr>
+        <tr>
+            <th>{% trans "Run After" %}</th>
+            <td>{{ task.run_after|default:"-" }}</td>
+        </tr>
+        <tr>
+            <th>{% trans "Started At" %}</th>
+            <td>{{ task.started_at|default:"-" }}</td>
+        </tr>
+        <tr>
+            <th>{% trans "Finished At" %}</th>
+            <td>{{ task.finished_at|default:"-" }}</td>
+        </tr>
+    </table>
+
+    <h2>{% trans "Arguments" %}</h2>
+    <table>
+        <tr>
+            <th>{% trans "Args" %}</th>
+            <td>
+                {% if task.args_json %}
+                <div class="json-content">{{ task.args_json }}</div>
+                {% else %}
+                <span style="color: #999;">{% trans "None" %}</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>{% trans "Kwargs" %}</th>
+            <td>
+                {% if task.kwargs_json %}
+                <div class="json-content">{{ task.kwargs_json }}</div>
+                {% else %}
+                <span style="color: #999;">{% trans "None" %}</span>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+
+    {% if task.status == 'SUCCESSFUL' %}
+    <h2>{% trans "Return Value" %}</h2>
+    <table>
+        <tr>
+            <th>{% trans "Result" %}</th>
+            <td>
+                <div class="json-content">{{ task.return_value_json }}</div>
+            </td>
+        </tr>
+    </table>
+    {% endif %}
+
+    {% if task.status == 'FAILED' and task.errors_json %}
+    <h2>{% trans "Error Information" %}</h2>
+    <table>
+        <tr>
+            <th>{% trans "Errors" %}</th>
+            <td>
+                <div class="error-content">{{ task.errors_json }}</div>
+            </td>
+        </tr>
+    </table>
+    {% endif %}
+
+    {% if task.worker_ids_json %}
+    <h2>{% trans "Worker Information" %}</h2>
+    <table>
+        <tr>
+            <th>{% trans "Worker IDs" %}</th>
+            <td>{{ task.worker_ids_json }}</td>
+        </tr>
+    </table>
+    {% endif %}
+</div>
+{% else %}
+<div class="task-detail not-found">
+    <h2>{% trans "Task Not Found" %}</h2>
+    <p>{% trans "The task with ID" %} <code>{{ task_id }}</code> {% trans "was not found." %}</p>
+</div>
+{% endif %}
+
+<p style="margin-top: 20px;">
+    <a class="back-link" href="{% url 'admin:django_tasks_redis_redistask_changelist' %}">&larr; Back to Task List</a>
+</p>
+{% endblock %}

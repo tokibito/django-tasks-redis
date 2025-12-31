@@ -79,10 +79,12 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 TASKS = {
     "default": {
         "BACKEND": "django_tasks_redis.RedisTaskBackend",
+        "QUEUES": [],  # Empty list = allow all queue names
         "OPTIONS": {
             "REDIS_URL": "redis://localhost:6379/0",
             "REDIS_KEY_PREFIX": "django_tasks_example",
-            "REDIS_RESULT_TTL": 86400,  # 24 hours
+            "REDIS_RESULT_TTL": 86400,  # 24 hours (default: 30 days)
+            # "REDIS_COMPLETED_TASK_TTL": 2592000,  # TTL for completed tasks (default: same as REDIS_RESULT_TTL)
         },
     },
 }
