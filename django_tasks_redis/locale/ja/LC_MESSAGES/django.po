@@ -1,0 +1,129 @@
+# Japanese translations for django-tasks-redis
+# Copyright (C) 2025 Shinya Okano
+# This file is distributed under the same license as the django-tasks-redis package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: django-tasks-redis 0.1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2025-01-01 00:00+0000\n"
+"PO-Revision-Date: 2025-01-01 00:00+0000\n"
+"Last-Translator: Shinya Okano <tokibito@gmail.com>\n"
+"Language-Team: Japanese\n"
+"Language: ja\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#: apps.py
+msgid "Redis Tasks"
+msgstr "Redisタスク"
+
+#: admin.py
+msgid "Redis Task"
+msgstr "Redisタスク"
+
+#: admin.py
+msgid "Redis Tasks"
+msgstr "Redisタスク"
+
+#: admin.py
+msgid "ID"
+msgstr "ID"
+
+#: admin.py
+msgid "Task"
+msgstr "タスク"
+
+#: admin.py
+msgid "Status"
+msgstr "ステータス"
+
+#: admin.py
+msgid "Run selected tasks"
+msgstr "選択されたタスクを実行"
+
+#: admin.py
+msgid "Retry failed tasks"
+msgstr "失敗したタスクを再実行"
+
+#: admin.py
+msgid "No tasks selected."
+msgstr "タスクが選択されていません。"
+
+#: admin.py
+msgid "%(count)d succeeded"
+msgstr "%(count)d件成功"
+
+#: admin.py
+msgid "%(count)d failed"
+msgstr "%(count)d件失敗"
+
+#: admin.py
+msgid "%(count)d skipped (not READY)"
+msgstr "%(count)d件スキップ (READY状態ではない)"
+
+#: admin.py
+msgid "%(count)d failed again"
+msgstr "%(count)d件再度失敗"
+
+#: admin.py
+msgid "%(count)d skipped (not FAILED)"
+msgstr "%(count)d件スキップ (FAILED状態ではない)"
+
+#: admin.py
+msgid "Task execution completed: %(results)s."
+msgstr "タスク実行完了: %(results)s。"
+
+#: admin.py
+msgid "Retry completed: %(results)s."
+msgstr "再試行完了: %(results)s。"
+
+#: management/commands/run_redis_tasks.py
+msgid "Run a worker to process Redis tasks"
+msgstr "Redisタスクを処理するワーカーを実行"
+
+#: management/commands/run_redis_tasks.py
+msgid "Process only tasks from specific queue"
+msgstr "特定のキューからのタスクのみを処理"
+
+#: management/commands/run_redis_tasks.py
+msgid "Backend name (default: default)"
+msgstr "バックエンド名 (デフォルト: default)"
+
+#: management/commands/run_redis_tasks.py
+msgid "Run continuously (don't exit when queue is empty)"
+msgstr "継続的に実行 (キューが空になっても終了しない)"
+
+#: management/commands/run_redis_tasks.py
+msgid "Polling interval in seconds (default: 1.0)"
+msgstr "ポーリング間隔（秒）(デフォルト: 1.0)"
+
+#: management/commands/run_redis_tasks.py
+msgid "Maximum number of tasks to process (0 = unlimited)"
+msgstr "処理する最大タスク数 (0 = 無制限)"
+
+#: management/commands/run_redis_tasks.py
+msgid "Stale task claim interval in seconds (default: 60.0)"
+msgstr "古いタスクの奪取間隔（秒）(デフォルト: 60.0)"
+
+#: management/commands/purge_completed_redis_tasks.py
+msgid "Delete completed Redis tasks older than specified days"
+msgstr "指定日数より古い完了済みRedisタスクを削除"
+
+#: management/commands/purge_completed_redis_tasks.py
+msgid "Delete tasks completed more than N days ago (default: 7)"
+msgstr "N日以上前に完了したタスクを削除 (デフォルト: 7)"
+
+#: management/commands/purge_completed_redis_tasks.py
+msgid "Status to delete (can be specified multiple times, default: SUCCESSFUL,FAILED)"
+msgstr "削除対象のステータス (複数指定可、デフォルト: SUCCESSFUL,FAILED)"
+
+#: management/commands/purge_completed_redis_tasks.py
+msgid "Batch size for deletion (default: 1000)"
+msgstr "削除のバッチサイズ (デフォルト: 1000)"
+
+#: management/commands/purge_completed_redis_tasks.py
+msgid "Only show count, don't actually delete"
+msgstr "カウントのみ表示、実際には削除しない"
