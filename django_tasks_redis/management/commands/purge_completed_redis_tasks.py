@@ -24,7 +24,9 @@ class Command(BaseCommand):
             dest="statuses",
             action="append",
             choices=["SUCCESSFUL", "FAILED"],
-            help=_("Status to delete (can be specified multiple times, default: SUCCESSFUL,FAILED)"),
+            help=_(
+                "Status to delete (can be specified multiple times, default: SUCCESSFUL,FAILED)"
+            ),
         )
         parser.add_argument(
             "--batch-size",
@@ -62,7 +64,9 @@ class Command(BaseCommand):
         self.stdout.write(f"  Statuses: {', '.join(str(s) for s in statuses)}")
 
         if dry_run:
-            self.stdout.write(self.style.WARNING("  DRY RUN - no tasks will be deleted"))
+            self.stdout.write(
+                self.style.WARNING("  DRY RUN - no tasks will be deleted")
+            )
 
             # Get count of tasks that would be deleted
             from django.tasks import task_backends
@@ -107,6 +111,4 @@ class Command(BaseCommand):
                 statuses=statuses,
             )
 
-            self.stdout.write(
-                self.style.SUCCESS(f"\nDeleted {deleted_count} task(s)")
-            )
+            self.stdout.write(self.style.SUCCESS(f"\nDeleted {deleted_count} task(s)"))

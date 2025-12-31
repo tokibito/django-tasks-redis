@@ -179,7 +179,9 @@ class RedisTaskAdmin(admin.ModelAdmin):
             "has_change_permission": False,
             "original": task_id,
         }
-        return render(request, "admin/django_tasks_redis/redistask/detail.html", context)
+        return render(
+            request, "admin/django_tasks_redis/redistask/detail.html", context
+        )
 
     def get_changelist(self, request, **kwargs):
         """Return custom ChangeList class."""

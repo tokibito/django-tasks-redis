@@ -206,7 +206,9 @@ def process_one_task(queue_name=None, backend_name="default", worker_id=None):
     if worker_id is None:
         worker_id = _generate_worker_id()
 
-    task_data = fetch_task(queue_name=queue_name, backend_name=backend_name, worker_id=worker_id)
+    task_data = fetch_task(
+        queue_name=queue_name, backend_name=backend_name, worker_id=worker_id
+    )
 
     if task_data is None:
         return None
@@ -607,8 +609,10 @@ def get_queue_stats(backend_name="default", queue_name=None):
     counts = backend.get_status_counts(queue_name=queue_name)
 
     # Get delayed count
-    queue_names = [queue_name] if queue_name else (
-        list(backend.queues) if backend.queues else ["default"]
+    queue_names = (
+        [queue_name]
+        if queue_name
+        else (list(backend.queues) if backend.queues else ["default"])
     )
 
     delayed_count = 0
