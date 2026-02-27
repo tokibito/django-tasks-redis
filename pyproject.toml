@@ -60,6 +60,9 @@ Issues = "https://github.com/tokibito/django-tasks-redis/issues"
 include = ["django_tasks_redis*"]
 exclude = ["tests*", "examples*"]
 
+[tool.setuptools.package-data]
+django_tasks_redis = ["templates/**/*.html"]
+
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
 pythonpath = ["."]
