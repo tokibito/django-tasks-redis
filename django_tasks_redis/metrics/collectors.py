@@ -6,6 +6,7 @@ ensuring accurate metrics even when the web server process doesn't handle task e
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,6 +32,8 @@ class RedisTaskMetricsCollector(Collector):
 
     Metrics exposed:
     - django_tasks_queue_length: Gauge for current queue length by status
+    - django_tasks_queue_oldest_ready_age_seconds: Age of oldest READY task in seconds
+    - django_tasks_queue_newest_ready_age_seconds: Age of newest READY task in seconds
     """
 
     def __init__(self, backend: "RedisTaskBackend"):
@@ -81,6 +84,61 @@ class RedisTaskMetricsCollector(Collector):
                 )
 
             yield queue_length
+
+            # Calculate age metrics for READY tasks
+            ready_count = status_counts.get("READY", 0)
+            if ready_count > 0:
+                ready_tasks, _ = self.backend.get_all_tasks(
+                    status="READY",
+                    limit=ready_count  # Get all READY tasks
+                )
+
+                if ready_tasks:
+                    now = datetime.now(timezone.utc)
+                    ages = []
+
+                    for task in ready_tasks:
+                        enqueued_at_str = task.get("enqueued_at", "")
+                        if enqueued_at_str:
+                            try:
+                                from django_tasks_redis.utils import deserialize_datetime
+                                enqueued_at = deserialize_datetime(enqueued_at_str)
+                                if enqueued_at:
+                                    # Make sure enqueued_at is timezone-aware
+                                    if enqueued_at.tzinfo is None:
+                                        enqueued_at = enqueued_at.replace(tzinfo=timezone.utc)
+                                    age_seconds = (now - enqueued_at).total_seconds()
+                                    ages.append(age_seconds)
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to parse enqueued_at for task: %s",
+                                    e
+                                )
+
+                    if ages:
+                        # Create gauge for oldest READY task age
+                        oldest_age = GaugeMetricFamily(
+                            "django_tasks_queue_oldest_ready_age_seconds",
+                            "Age of the oldest READY task in seconds",
+                            labels=["backend"],
+                        )
+                        oldest_age.add_metric(
+                            labels=[self.backend_name],
+                            value=max(ages),
+                        )
+                        yield oldest_age
+
+                        # Create gauge for newest READY task age
+                        newest_age = GaugeMetricFamily(
+                            "django_tasks_queue_newest_ready_age_seconds",
+                            "Age of the newest READY task in seconds",
+                            labels=["backend"],
+                        )
+                        newest_age.add_metric(
+                            labels=[self.backend_name],
+                            value=min(ages),
+                        )
+                        yield newest_age
 
             logger.debug(
                 "Collected metrics for backend %s: %s",
