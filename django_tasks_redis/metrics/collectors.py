@@ -6,7 +6,7 @@ ensuring accurate metrics even when the web server process doesn't handle task e
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -91,29 +91,31 @@ class RedisTaskMetricsCollector(Collector):
             if ready_count > 0:
                 ready_tasks, _ = self.backend.get_all_tasks(
                     status="READY",
-                    limit=ready_count  # Get all READY tasks
+                    limit=ready_count,  # Get all READY tasks
                 )
 
                 if ready_tasks:
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
                     ages = []
 
                     for task in ready_tasks:
                         enqueued_at_str = task.get("enqueued_at", "")
                         if enqueued_at_str:
                             try:
-                                from django_tasks_redis.utils import deserialize_datetime
+                                from django_tasks_redis.utils import (
+                                    deserialize_datetime,
+                                )
+
                                 enqueued_at = deserialize_datetime(enqueued_at_str)
                                 if enqueued_at:
                                     # Make sure enqueued_at is timezone-aware
                                     if enqueued_at.tzinfo is None:
-                                        enqueued_at = enqueued_at.replace(tzinfo=timezone.utc)
+                                        enqueued_at = enqueued_at.replace(tzinfo=UTC)
                                     age_seconds = (now - enqueued_at).total_seconds()
                                     ages.append(age_seconds)
                             except Exception as e:
                                 logger.warning(
-                                    "Failed to parse enqueued_at for task: %s",
-                                    e
+                                    "Failed to parse enqueued_at for task: %s", e
                                 )
 
                     if ages:

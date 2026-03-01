@@ -5,7 +5,7 @@ Management command to run Redis task worker.
 import signal
 import time
 from threading import Thread
-from wsgiref.simple_server import make_server, WSGIRequestHandler
+from wsgiref.simple_server import WSGIRequestHandler, make_server
 
 from django.core.management.base import BaseCommand
 from django.utils.translation import gettext_lazy as _
@@ -99,7 +99,9 @@ class Command(BaseCommand):
 
             def serve():
                 self.stdout.write(
-                    self.style.SUCCESS(f"Metrics server started on http://0.0.0.0:{port}/metrics")
+                    self.style.SUCCESS(
+                        f"Metrics server started on http://0.0.0.0:{port}/metrics"
+                    )
                 )
                 self.metrics_server.serve_forever()
 

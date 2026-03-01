@@ -2,7 +2,7 @@
 Tests for Prometheus metrics integration.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
@@ -154,7 +154,7 @@ class TestRedisTaskMetricsCollector:
         }
 
         # Create mock tasks with different ages
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         oldest_task_time = now - timedelta(minutes=10)
         middle_task_time = now - timedelta(minutes=5)
         newest_task_time = now - timedelta(minutes=1)
@@ -174,10 +174,7 @@ class TestRedisTaskMetricsCollector:
         metrics = list(collector.collect())
 
         # Verify get_all_tasks was called with READY status
-        mock_backend.get_all_tasks.assert_called_once_with(
-            status="READY",
-            limit=3
-        )
+        mock_backend.get_all_tasks.assert_called_once_with(status="READY", limit=3)
 
         # Should return 3 metrics: queue_length, oldest_age, newest_age
         assert len(metrics) == 3
@@ -189,11 +186,13 @@ class TestRedisTaskMetricsCollector:
 
         # Check the age metrics values
         oldest_metric = next(
-            m for m in metrics
+            m
+            for m in metrics
             if m.name == "django_tasks_queue_oldest_ready_age_seconds"
         )
         newest_metric = next(
-            m for m in metrics
+            m
+            for m in metrics
             if m.name == "django_tasks_queue_newest_ready_age_seconds"
         )
 
@@ -252,7 +251,7 @@ class TestRedisTaskMetricsCollector:
             TaskResultStatus.READY: 3,
         }
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         valid_task_time = now - timedelta(minutes=5)
 
         # Mix of valid and invalid tasks
@@ -317,7 +316,8 @@ class TestTaskDurationHistogram:
 
         # Find samples matching our backend and SUCCESSFUL status
         matching_samples = [
-            s for s in samples
+            s
+            for s in samples
             if s.labels.get("backend") == "test_duration"
             and s.labels.get("status") == TaskResultStatus.SUCCESSFUL
         ]
@@ -359,7 +359,8 @@ class TestTaskDurationHistogram:
         samples = list(histogram.collect())[0].samples
 
         matching_samples = [
-            s for s in samples
+            s
+            for s in samples
             if s.labels.get("backend") == "test_duration_fail"
             and s.labels.get("status") == TaskResultStatus.FAILED
         ]
@@ -407,4 +408,5 @@ class TestTaskDurationHistogram:
 
         # Verify it's a Histogram
         from prometheus_client import Histogram
+
         assert isinstance(histogram1, Histogram)

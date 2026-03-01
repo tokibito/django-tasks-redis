@@ -20,7 +20,7 @@ Enable metrics in your Django settings:
 """
 
 try:
-    from prometheus_client import Histogram, REGISTRY
+    from prometheus_client import REGISTRY, Histogram
 
     PROMETHEUS_AVAILABLE = True
 except ImportError:
