@@ -27,6 +27,11 @@ except ImportError:
     PROMETHEUS_AVAILABLE = False
     REGISTRY = None
 
-from .collectors import TaskMetricsCollector
+from .collectors import RedisTaskMetricsCollector, TaskMetricsCollector
 
-__all__ = ["TaskMetricsCollector", "PROMETHEUS_AVAILABLE", "REGISTRY"]
+__all__ = [
+    "RedisTaskMetricsCollector",
+    "TaskMetricsCollector",
+    "PROMETHEUS_AVAILABLE",
+    "REGISTRY",
+]

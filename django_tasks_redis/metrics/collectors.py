@@ -1,5 +1,8 @@
 """
 Prometheus metric collectors for django-tasks-redis.
+
+This collector queries Redis directly when Prometheus scrapes the metrics endpoint,
+ensuring accurate metrics even when the web server process doesn't handle task execution.
 """
 
 import logging
@@ -9,32 +12,25 @@ if TYPE_CHECKING:
     from django_tasks_redis.backends import RedisTaskBackend
 
 try:
-    from prometheus_client import Counter, Gauge, Histogram
+    from prometheus_client.core import GaugeMetricFamily
+    from prometheus_client.registry import Collector
 except ImportError:
     # Graceful fallback if prometheus-client not installed
-    Counter = None
-    Gauge = None
-    Histogram = None
+    Collector = None
+    GaugeMetricFamily = None
 
 logger = logging.getLogger("django_tasks_redis.metrics")
 
-# Global metric instances (singleton pattern)
-# This prevents ValueError when multiple backend instances are created
-# (e.g., in multi-process Django applications like WSGI/ASGI servers)
-_metrics_registry = {}
 
-
-class TaskMetricsCollector:
+class RedisTaskMetricsCollector(Collector):
     """
-    Collects Prometheus metrics for Redis task backend.
+    Custom Prometheus collector that queries Redis directly at scrape time.
+
+    This approach ensures metrics are accurate regardless of which process
+    is serving the metrics endpoint, since all data comes from Redis.
 
     Metrics exposed:
-    - django_tasks_enqueued_total: Counter for enqueued tasks
-    - django_tasks_completed_total: Counter for completed tasks
-    - django_tasks_failed_total: Counter for failed tasks
-    - django_tasks_queue_length: Gauge for current queue length
-    - django_tasks_running: Gauge for currently running tasks
-    - django_tasks_duration_seconds: Histogram for task execution duration
+    - django_tasks_queue_length: Gauge for current queue length by status
     """
 
     def __init__(self, backend: "RedisTaskBackend"):
@@ -44,7 +40,7 @@ class TaskMetricsCollector:
         Args:
             backend: The RedisTaskBackend instance to monitor.
         """
-        if Counter is None:
+        if Collector is None:
             raise ImportError(
                 "prometheus-client is not installed. "
                 "Install with: pip install django-tasks-redis[prometheus]"
@@ -53,146 +49,60 @@ class TaskMetricsCollector:
         self.backend = backend
         self.backend_name = backend.alias
 
-        # Use singleton pattern to avoid duplicate metric registration
-        # Metrics are global and shared across all backend instances
-        if not _metrics_registry:
-            # Counters
-            _metrics_registry["tasks_enqueued"] = Counter(
-                "django_tasks_enqueued_total",
-                "Total number of tasks enqueued",
-                ["backend", "queue", "priority"],
-            )
-
-            _metrics_registry["tasks_completed"] = Counter(
-                "django_tasks_completed_total",
-                "Total number of tasks completed successfully",
-                ["backend", "queue"],
-            )
-
-            _metrics_registry["tasks_failed"] = Counter(
-                "django_tasks_failed_total",
-                "Total number of tasks that failed",
-                ["backend", "queue"],
-            )
-
-            # Gauges
-            _metrics_registry["queue_length"] = Gauge(
-                "django_tasks_queue_length",
-                "Current number of tasks in queue by status",
-                ["backend", "queue", "status"],
-            )
-
-            _metrics_registry["tasks_running"] = Gauge(
-                "django_tasks_running",
-                "Number of currently running tasks",
-                ["backend", "queue"],
-            )
-
-            # Histogram
-            _metrics_registry["task_duration"] = Histogram(
-                "django_tasks_duration_seconds",
-                "Task execution duration in seconds",
-                ["backend", "queue", "status"],
-                buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
-            )
-
-            logger.info("Prometheus metrics registered globally")
-
-        # Reference the global metrics
-        self.tasks_enqueued = _metrics_registry["tasks_enqueued"]
-        self.tasks_completed = _metrics_registry["tasks_completed"]
-        self.tasks_failed = _metrics_registry["tasks_failed"]
-        self.queue_length = _metrics_registry["queue_length"]
-        self.tasks_running = _metrics_registry["tasks_running"]
-        self.task_duration = _metrics_registry["task_duration"]
-
         logger.info(
-            "TaskMetricsCollector initialized for backend: %s", self.backend_name
+            "RedisTaskMetricsCollector initialized for backend: %s", self.backend_name
         )
 
-    def record_task_enqueued(self, queue_name: str, priority: int):
+    def collect(self):
         """
-        Record a task being enqueued.
+        Called by Prometheus client when metrics are scraped.
 
-        Args:
-            queue_name: Name of the queue.
-            priority: Task priority level.
-        """
-        self.tasks_enqueued.labels(
-            backend=self.backend_name,
-            queue=queue_name,
-            priority=str(priority),
-        ).inc()
+        Queries Redis directly to get current queue statistics.
 
-    def record_task_completed(self, queue_name: str):
-        """
-        Record a task completing successfully.
-
-        Args:
-            queue_name: Name of the queue.
-        """
-        self.tasks_completed.labels(
-            backend=self.backend_name,
-            queue=queue_name,
-        ).inc()
-
-    def record_task_failed(self, queue_name: str):
-        """
-        Record a task failing.
-
-        Args:
-            queue_name: Name of the queue.
-        """
-        self.tasks_failed.labels(
-            backend=self.backend_name,
-            queue=queue_name,
-        ).inc()
-
-    def record_task_duration(self, queue_name: str, status: str, duration_seconds: float):
-        """
-        Record task execution duration.
-
-        Args:
-            queue_name: Name of the queue.
-            status: Task final status (SUCCESSFUL or FAILED).
-            duration_seconds: Duration in seconds.
-        """
-        self.task_duration.labels(
-            backend=self.backend_name,
-            queue=queue_name,
-            status=status,
-        ).observe(duration_seconds)
-
-    def update_queue_lengths(self):
-        """
-        Update queue length gauges by fetching current status counts from Redis.
-
-        This should be called periodically to update the gauge metrics.
+        Yields:
+            Prometheus metric families with current values from Redis.
         """
         try:
-            # Get status counts for all queues
+            # Get status counts from Redis
             status_counts = self.backend.get_status_counts()
 
-            # Update gauges for each status
+            # Create gauge metric family for queue length
+            queue_length = GaugeMetricFamily(
+                "django_tasks_queue_length",
+                "Current number of tasks in queue by status",
+                labels=["backend", "status"],
+            )
+
+            # Add samples for each status
             for status, count in status_counts.items():
-                self.queue_length.labels(
-                    backend=self.backend_name,
-                    queue="all",  # Aggregate across all queues
-                    status=status,
-                ).set(count)
+                queue_length.add_metric(
+                    labels=[self.backend_name, status],
+                    value=count,
+                )
+
+            yield queue_length
+
+            logger.debug(
+                "Collected metrics for backend %s: %s",
+                self.backend_name,
+                status_counts,
+            )
 
         except Exception as e:
-            logger.error("Failed to update queue length metrics: %s", e)
+            logger.error("Failed to collect metrics from Redis: %s", e, exc_info=True)
+            # Don't yield any metrics on error - Prometheus will use stale data
 
-    def update_running_tasks(self, queue_name: str, count: int):
-        """
-        Update the number of running tasks for a queue.
 
-        Args:
-            queue_name: Name of the queue.
-            count: Number of currently running tasks.
-        """
-        self.tasks_running.labels(
-            backend=self.backend_name,
-            queue=queue_name,
-        ).set(count)
+# Backward compatibility: keep old class name but log deprecation warning
+class TaskMetricsCollector(RedisTaskMetricsCollector):
+    """
+    Deprecated: Use RedisTaskMetricsCollector instead.
+
+    This class is kept for backward compatibility but will be removed in a future version.
+    """
+
+    def __init__(self, backend: "RedisTaskBackend"):
+        logger.warning(
+            "TaskMetricsCollector is deprecated. Use RedisTaskMetricsCollector instead."
+        )
+        super().__init__(backend)

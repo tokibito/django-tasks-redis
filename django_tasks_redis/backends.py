@@ -76,8 +76,11 @@ class RedisTaskBackend(BaseTaskBackend):
             return
 
         try:
-            from .metrics import PROMETHEUS_AVAILABLE, TaskMetricsCollector
-            from .metrics.signals import MetricsSignalHandler
+            from .metrics import (
+                PROMETHEUS_AVAILABLE,
+                REGISTRY,
+                RedisTaskMetricsCollector,
+            )
 
             if not PROMETHEUS_AVAILABLE:
                 logger.warning(
@@ -86,10 +89,26 @@ class RedisTaskBackend(BaseTaskBackend):
                 )
                 return
 
-            self._metrics_collector = TaskMetricsCollector(self)
-            self._metrics_handler = MetricsSignalHandler(self._metrics_collector)
+            # Register the custom collector with Prometheus
+            # It will query Redis directly when scraped
+            collector = RedisTaskMetricsCollector(self)
 
-            logger.info("Prometheus metrics enabled for backend: %s", self.alias)
+            # Try to register, but catch duplicate registration errors
+            # This can happen in tests or when multiple backends are initialized
+            try:
+                REGISTRY.register(collector)
+                logger.info(
+                    "Prometheus metrics collector registered for backend: %s",
+                    self.alias,
+                )
+            except ValueError as e:
+                if "Duplicated timeseries" in str(e):
+                    logger.debug(
+                        "Prometheus metrics collector already registered (duplicate ignored): %s",
+                        self.alias,
+                    )
+                else:
+                    raise
 
         except ImportError as e:
             logger.warning(

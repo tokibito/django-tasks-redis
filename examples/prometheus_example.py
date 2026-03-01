@@ -5,6 +5,9 @@ This example demonstrates:
 1. Enabling metrics in settings
 2. Exposing a metrics endpoint
 3. Monitoring task execution
+
+The metrics collector queries Redis directly when Prometheus scrapes the endpoint,
+ensuring accurate metrics regardless of which process serves the endpoint or processes tasks.
 """
 
 # Example Django settings configuration
@@ -42,7 +45,13 @@ from prometheus_client import REGISTRY, generate_latest
 
 
 def metrics_view(request):
-    '''Expose Prometheus metrics endpoint.'''
+    '''
+    Expose Prometheus metrics endpoint.
+
+    The django-tasks-redis collector automatically queries Redis for current
+    task statistics when this endpoint is scraped, so metrics are always
+    up-to-date even if this process doesn't execute any tasks.
+    '''
     metrics = generate_latest(REGISTRY)
     return HttpResponse(
         metrics,
@@ -113,9 +122,11 @@ result2 = send_notification.enqueue(
 print(f"Task 1 ID: {result1.id}")
 print(f"Task 2 ID: {result2.id}")
 
-# Metrics will automatically track:
-# - django_tasks_enqueued_total (incremented)
-# - django_tasks_queue_length{status="READY"} (updated)
+# When Prometheus scrapes /metrics, it will show current queue state from Redis:
+# - django_tasks_queue_length{backend="default",status="READY"} 2
+# - django_tasks_queue_length{backend="default",status="RUNNING"} 0
+# - django_tasks_queue_length{backend="default",status="SUCCESSFUL"} 0
+# - django_tasks_queue_length{backend="default",status="FAILED"} 0
 """
 
 # Example Prometheus scrape config
@@ -138,27 +149,30 @@ scrape_configs:
 EXAMPLE_PROMQL_QUERIES = """
 # Grafana Dashboard Queries
 
-## Queue Backlog (Gauge)
+## Current Queue Metrics
+
+# Pending tasks waiting to be processed
 django_tasks_queue_length{status="READY"}
 
-## Task Throughput (Graph)
-rate(django_tasks_enqueued_total[1m])
-rate(django_tasks_completed_total[1m])
-rate(django_tasks_failed_total[1m])
+# Currently running tasks
+django_tasks_queue_length{status="RUNNING"}
 
-## Task Duration - 95th Percentile (Graph)
-histogram_quantile(0.95,
-  rate(django_tasks_duration_seconds_bucket[5m])
-)
+# Successfully completed tasks (historical count)
+django_tasks_queue_length{status="SUCCESSFUL"}
 
-## Success Rate (Gauge)
-(
-  rate(django_tasks_completed_total[5m]) /
-  (rate(django_tasks_completed_total[5m]) + rate(django_tasks_failed_total[5m]))
-) * 100
+# Failed tasks (historical count)
+django_tasks_queue_length{status="FAILED"}
 
-## Tasks by Queue (Table)
-sum by (queue) (django_tasks_queue_length)
+## Total tasks in system
+sum(django_tasks_queue_length)
+
+## Tasks by status (stacked graph)
+sum by (status) (django_tasks_queue_length)
+
+## Success rate (requires SUCCESSFUL and FAILED counts)
+django_tasks_queue_length{status="SUCCESSFUL"} /
+(django_tasks_queue_length{status="SUCCESSFUL"} + django_tasks_queue_length{status="FAILED"})
+* 100
 """
 
 # Example alert rules
@@ -175,20 +189,25 @@ groups:
           severity: warning
         annotations:
           summary: "High task queue backlog detected"
-          description: "Queue {{ $labels.queue }} has {{ $value }} pending tasks"
+          description: "Backend {{ $labels.backend }} has {{ $value }} pending tasks"
 
-      - alert: HighTaskFailureRate
-        expr: |
-          (
-            rate(django_tasks_failed_total[5m]) /
-            (rate(django_tasks_completed_total[5m]) + rate(django_tasks_failed_total[5m]))
-          ) > 0.1
+      - alert: TasksStuckInRunningState
+        expr: django_tasks_queue_length{status="RUNNING"} > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many tasks stuck in RUNNING state"
+          description: "Backend {{ $labels.backend }} has {{ $value }} tasks in RUNNING state for >10min"
+
+      - alert: HighFailureCount
+        expr: django_tasks_queue_length{status="FAILED"} > 500
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "High task failure rate"
-          description: "More than 10% of tasks are failing in queue {{ $labels.queue }}"
+          summary: "High number of failed tasks"
+          description: "Backend {{ $labels.backend }} has {{ $value }} failed tasks"
 """
 
 
