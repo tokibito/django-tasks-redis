@@ -50,6 +50,9 @@ dev = [
     "pytest-django>=4.5",
     "ruff>=0.8",
 ]
+prometheus = [
+    "prometheus-client>=0.20.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/tokibito/django-tasks-redis"

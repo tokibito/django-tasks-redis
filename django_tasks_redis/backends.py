@@ -43,6 +43,8 @@ class RedisTaskBackend(BaseTaskBackend):
     def __init__(self, alias, params):
         super().__init__(alias, params)
         self._client = None
+        self._metrics_collector = None
+        self._metrics_handler = None
 
         # Settings with REDIS_ prefix
         self.result_ttl = self.options.get("REDIS_RESULT_TTL", 2592000)  # 30 days
@@ -57,11 +59,42 @@ class RedisTaskBackend(BaseTaskBackend):
         self.claim_timeout = self.options.get("REDIS_CLAIM_TIMEOUT", 300)
         self.block_timeout = self.options.get("REDIS_BLOCK_TIMEOUT", 5000)
 
+        # Initialize Prometheus metrics if enabled
+        self._init_metrics()
+
     def get_client(self):
         """Get or create Redis client."""
         if self._client is None:
             self._client = get_redis_client(self.options)
         return self._client
+
+    def _init_metrics(self):
+        """Initialize Prometheus metrics if enabled and available."""
+        enable_metrics = self.options.get("ENABLE_METRICS", False)
+
+        if not enable_metrics:
+            return
+
+        try:
+            from .metrics import PROMETHEUS_AVAILABLE, TaskMetricsCollector
+            from .metrics.signals import MetricsSignalHandler
+
+            if not PROMETHEUS_AVAILABLE:
+                logger.warning(
+                    "ENABLE_METRICS is True but prometheus-client not installed. "
+                    "Install with: pip install django-tasks-redis[prometheus]"
+                )
+                return
+
+            self._metrics_collector = TaskMetricsCollector(self)
+            self._metrics_handler = MetricsSignalHandler(self._metrics_collector)
+
+            logger.info("Prometheus metrics enabled for backend: %s", self.alias)
+
+        except ImportError as e:
+            logger.warning(
+                "Failed to initialize metrics (prometheus-client not installed): %s", e
+            )
 
     def get_auth_handler(self):
         """
