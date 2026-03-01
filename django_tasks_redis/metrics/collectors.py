@@ -18,6 +18,11 @@ except ImportError:
 
 logger = logging.getLogger("django_tasks_redis.metrics")
 
+# Global metric instances (singleton pattern)
+# This prevents ValueError when multiple backend instances are created
+# (e.g., in multi-process Django applications like WSGI/ASGI servers)
+_metrics_registry = {}
+
 
 class TaskMetricsCollector:
     """
@@ -48,45 +53,58 @@ class TaskMetricsCollector:
         self.backend = backend
         self.backend_name = backend.alias
 
-        # Counters
-        self.tasks_enqueued = Counter(
-            "django_tasks_enqueued_total",
-            "Total number of tasks enqueued",
-            ["backend", "queue", "priority"],
-        )
+        # Use singleton pattern to avoid duplicate metric registration
+        # Metrics are global and shared across all backend instances
+        if not _metrics_registry:
+            # Counters
+            _metrics_registry["tasks_enqueued"] = Counter(
+                "django_tasks_enqueued_total",
+                "Total number of tasks enqueued",
+                ["backend", "queue", "priority"],
+            )
 
-        self.tasks_completed = Counter(
-            "django_tasks_completed_total",
-            "Total number of tasks completed successfully",
-            ["backend", "queue"],
-        )
+            _metrics_registry["tasks_completed"] = Counter(
+                "django_tasks_completed_total",
+                "Total number of tasks completed successfully",
+                ["backend", "queue"],
+            )
 
-        self.tasks_failed = Counter(
-            "django_tasks_failed_total",
-            "Total number of tasks that failed",
-            ["backend", "queue"],
-        )
+            _metrics_registry["tasks_failed"] = Counter(
+                "django_tasks_failed_total",
+                "Total number of tasks that failed",
+                ["backend", "queue"],
+            )
 
-        # Gauges
-        self.queue_length = Gauge(
-            "django_tasks_queue_length",
-            "Current number of tasks in queue by status",
-            ["backend", "queue", "status"],
-        )
+            # Gauges
+            _metrics_registry["queue_length"] = Gauge(
+                "django_tasks_queue_length",
+                "Current number of tasks in queue by status",
+                ["backend", "queue", "status"],
+            )
 
-        self.tasks_running = Gauge(
-            "django_tasks_running",
-            "Number of currently running tasks",
-            ["backend", "queue"],
-        )
+            _metrics_registry["tasks_running"] = Gauge(
+                "django_tasks_running",
+                "Number of currently running tasks",
+                ["backend", "queue"],
+            )
 
-        # Histogram
-        self.task_duration = Histogram(
-            "django_tasks_duration_seconds",
-            "Task execution duration in seconds",
-            ["backend", "queue", "status"],
-            buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
-        )
+            # Histogram
+            _metrics_registry["task_duration"] = Histogram(
+                "django_tasks_duration_seconds",
+                "Task execution duration in seconds",
+                ["backend", "queue", "status"],
+                buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+            )
+
+            logger.info("Prometheus metrics registered globally")
+
+        # Reference the global metrics
+        self.tasks_enqueued = _metrics_registry["tasks_enqueued"]
+        self.tasks_completed = _metrics_registry["tasks_completed"]
+        self.tasks_failed = _metrics_registry["tasks_failed"]
+        self.queue_length = _metrics_registry["queue_length"]
+        self.tasks_running = _metrics_registry["tasks_running"]
+        self.task_duration = _metrics_registry["task_duration"]
 
         logger.info(
             "TaskMetricsCollector initialized for backend: %s", self.backend_name

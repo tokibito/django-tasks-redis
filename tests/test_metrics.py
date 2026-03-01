@@ -104,6 +104,32 @@ class TestTaskMetricsCollector:
         not _prometheus_available(),
         reason="prometheus-client not installed",
     )
+    def test_collector_multiple_instances_share_metrics(self):
+        """Test that multiple collector instances share the same metrics (singleton pattern)."""
+        from django_tasks_redis.metrics.collectors import TaskMetricsCollector
+
+        mock_backend1 = Mock()
+        mock_backend1.alias = "backend1"
+
+        mock_backend2 = Mock()
+        mock_backend2.alias = "backend2"
+
+        # Create two collectors - should not raise ValueError about duplicate metrics
+        collector1 = TaskMetricsCollector(mock_backend1)
+        collector2 = TaskMetricsCollector(mock_backend2)
+
+        # Verify they share the same metric instances
+        assert collector1.tasks_enqueued is collector2.tasks_enqueued
+        assert collector1.tasks_completed is collector2.tasks_completed
+        assert collector1.tasks_failed is collector2.tasks_failed
+        assert collector1.queue_length is collector2.queue_length
+        assert collector1.tasks_running is collector2.tasks_running
+        assert collector1.task_duration is collector2.task_duration
+
+    @pytest.mark.skipif(
+        not _prometheus_available(),
+        reason="prometheus-client not installed",
+    )
     def test_record_task_enqueued(self):
         """Test recording task enqueued."""
         from django_tasks_redis.metrics.collectors import TaskMetricsCollector
