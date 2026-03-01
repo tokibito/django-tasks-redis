@@ -34,6 +34,7 @@ class RedisTaskMetricsCollector(Collector):
     - django_tasks_queue_length: Gauge for current queue length by status
     - django_tasks_queue_oldest_ready_age_seconds: Age of oldest READY task in seconds
     - django_tasks_queue_newest_ready_age_seconds: Age of newest READY task in seconds
+    - django_tasks_duration_seconds: Histogram of task execution duration (recorded by worker)
     """
 
     def __init__(self, backend: "RedisTaskBackend"):
