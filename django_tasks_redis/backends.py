@@ -43,6 +43,8 @@ class RedisTaskBackend(BaseTaskBackend):
     def __init__(self, alias, params):
         super().__init__(alias, params)
         self._client = None
+        self._metrics_collector = None
+        self._metrics_handler = None
 
         # Settings with REDIS_ prefix
         self.result_ttl = self.options.get("REDIS_RESULT_TTL", 2592000)  # 30 days
@@ -57,11 +59,119 @@ class RedisTaskBackend(BaseTaskBackend):
         self.claim_timeout = self.options.get("REDIS_CLAIM_TIMEOUT", 300)
         self.block_timeout = self.options.get("REDIS_BLOCK_TIMEOUT", 5000)
 
+        # Initialize Prometheus metrics if enabled
+        self._init_metrics()
+
     def get_client(self):
         """Get or create Redis client."""
         if self._client is None:
             self._client = get_redis_client(self.options)
         return self._client
+
+    def _init_metrics(self):
+        """Initialize Prometheus metrics if enabled and available."""
+        enable_metrics = self.options.get("ENABLE_METRICS", False)
+
+        if not enable_metrics:
+            return
+
+        try:
+            from .metrics import (
+                PROMETHEUS_AVAILABLE,
+                REGISTRY,
+                RedisTaskMetricsCollector,
+            )
+
+            if not PROMETHEUS_AVAILABLE:
+                logger.warning(
+                    "ENABLE_METRICS is True but prometheus-client not installed. "
+                    "Install with: pip install django-tasks-redis[prometheus]"
+                )
+                return
+
+            # Register the custom collector with Prometheus
+            # It will query Redis directly when scraped
+            collector = RedisTaskMetricsCollector(self)
+
+            # Try to register, but catch duplicate registration errors
+            # This can happen in tests or when multiple backends are initialized
+            try:
+                REGISTRY.register(collector)
+                logger.info(
+                    "Prometheus metrics collector registered for backend: %s",
+                    self.alias,
+                )
+            except ValueError as e:
+                if "Duplicated timeseries" in str(e):
+                    logger.debug(
+                        "Prometheus metrics collector already registered (duplicate ignored): %s",
+                        self.alias,
+                    )
+                else:
+                    raise
+
+        except ImportError as e:
+            logger.warning(
+                "Failed to initialize metrics (prometheus-client not installed): %s", e
+            )
+
+    def _record_task_duration(self, started_at_str, finished_at_dt, status, task_data):
+        """
+        Record task duration to Prometheus histogram.
+
+        Args:
+            started_at_str: Serialized datetime string when task started
+            finished_at_dt: datetime object when task finished
+            status: Final task status (SUCCESSFUL or FAILED)
+            task_data: Dict containing task metadata including queue_name
+        """
+        enable_metrics = self.options.get("ENABLE_METRICS", False)
+        if not enable_metrics:
+            return
+
+        try:
+            from .metrics import get_task_duration_histogram
+
+            histogram = get_task_duration_histogram()
+            if histogram is None:
+                return
+
+            # Parse started_at to calculate duration
+            started_at_dt = deserialize_datetime(started_at_str)
+            if not started_at_dt:
+                logger.warning("Cannot record task duration: started_at not set")
+                return
+
+            # Ensure both datetimes are timezone-aware
+            if started_at_dt.tzinfo is None:
+                started_at_dt = started_at_dt.replace(tzinfo=timezone.utc)
+            if finished_at_dt.tzinfo is None:
+                finished_at_dt = finished_at_dt.replace(tzinfo=timezone.utc)
+
+            # Calculate duration in seconds
+            duration = (finished_at_dt - started_at_dt).total_seconds()
+
+            # Get queue name from task data
+            queue_name = task_data.get("queue_name", "default")
+
+            # Record the duration with labels
+            histogram.labels(
+                backend=self.alias,
+                queue=queue_name,
+                status=status,
+            ).observe(duration)
+
+            logger.debug(
+                "Recorded task duration: backend=%s queue=%s status=%s duration=%.3fs",
+                self.alias,
+                queue_name,
+                status,
+                duration,
+            )
+
+        except Exception as e:
+            # Don't let metrics recording errors break task execution
+            logger.warning("Failed to record task duration metric: %s", e)
 
     def get_auth_handler(self):
         """
@@ -303,7 +413,8 @@ class RedisTaskBackend(BaseTaskBackend):
             normalized_return_value = normalize_json(return_value)
 
             # Success
-            finished_at = serialize_datetime(timezone.now())
+            finished_at_dt = timezone.now()
+            finished_at = serialize_datetime(finished_at_dt)
             client.hset(
                 result_key,
                 mapping={
@@ -316,6 +427,11 @@ class RedisTaskBackend(BaseTaskBackend):
             # Set TTL for completed task
             if self.completed_task_ttl > 0:
                 client.expire(result_key, self.completed_task_ttl)
+
+            # Record task duration metric
+            self._record_task_duration(
+                started_at, finished_at_dt, TaskResultStatus.SUCCESSFUL, task_data
+            )
 
             # Refresh and return result
             task_data = client.hgetall(result_key)
@@ -342,7 +458,8 @@ class RedisTaskBackend(BaseTaskBackend):
                 }
             )
 
-            finished_at = serialize_datetime(timezone.now())
+            finished_at_dt = timezone.now()
+            finished_at = serialize_datetime(finished_at_dt)
             client.hset(
                 result_key,
                 mapping={
@@ -355,6 +472,11 @@ class RedisTaskBackend(BaseTaskBackend):
             # Set TTL for completed task
             if self.completed_task_ttl > 0:
                 client.expire(result_key, self.completed_task_ttl)
+
+            # Record task duration metric
+            self._record_task_duration(
+                started_at, finished_at_dt, TaskResultStatus.FAILED, task_data
+            )
 
             # Refresh and return result
             task_data = client.hgetall(result_key)

@@ -85,6 +85,7 @@ TASKS = {
             "REDIS_KEY_PREFIX": "django_tasks_example",
             "REDIS_RESULT_TTL": 86400,  # 24 hours (default: 30 days)
             # "REDIS_COMPLETED_TASK_TTL": 2592000,  # TTL for completed tasks (default: same as REDIS_RESULT_TTL)
+            "ENABLE_METRICS": True,  # Enable Prometheus metrics
         },
     },
 }

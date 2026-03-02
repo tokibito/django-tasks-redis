@@ -434,7 +434,9 @@ def claim_stale_tasks(backend_name="default", claim_timeout=None):
     return claimed_count
 
 
-def purge_completed_tasks(backend_name="default", days=7, statuses=None):
+def purge_completed_tasks(
+    backend_name="default", days=7, statuses=None, task_path=None
+):
     """
     Delete completed tasks older than specified days.
 
@@ -442,6 +444,7 @@ def purge_completed_tasks(backend_name="default", days=7, statuses=None):
         backend_name: Backend name (default: "default").
         days: Delete tasks finished more than this many days ago.
         statuses: List of statuses to delete. Default: [SUCCESSFUL, FAILED].
+        task_path: Optional task path filter. Only purge tasks with this task_path.
 
     Returns:
         Number of tasks deleted.
@@ -468,6 +471,10 @@ def purge_completed_tasks(backend_name="default", days=7, statuses=None):
 
         status = task_data.get("status")
         if status not in statuses:
+            continue
+
+        # Filter by task_path if specified
+        if task_path and task_data.get("task_path") != task_path:
             continue
 
         finished_at = deserialize_datetime(task_data.get("finished_at", ""))

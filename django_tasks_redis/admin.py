@@ -70,16 +70,21 @@ class RedisTaskChangeList(ChangeList):
 
     def get_results(self, request):
         # Fetch tasks from Redis
-        page_num = int(request.GET.get("p", 0))
+        # Django Admin uses 1-based page numbers (p=1 for first page, p=2 for second, etc.)
+        # When p is not provided, it defaults to first page
+        page_num = int(request.GET.get("p", 1))
         per_page = self.list_per_page
 
         # Get status filter if any
         status_filter = request.GET.get("status")
 
+        # Calculate 0-based offset for slicing
+        offset = (page_num - 1) * per_page
+
         tasks, total = executor.get_tasks(
             backend_name="default",
             status=status_filter,
-            offset=page_num * per_page,
+            offset=offset,
             limit=per_page,
         )
 
