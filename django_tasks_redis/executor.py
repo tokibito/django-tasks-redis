@@ -434,7 +434,9 @@ def claim_stale_tasks(backend_name="default", claim_timeout=None):
     return claimed_count
 
 
-def purge_completed_tasks(backend_name="default", days=7, statuses=None, task_path=None):
+def purge_completed_tasks(
+    backend_name="default", days=7, statuses=None, task_path=None
+):
     """
     Delete completed tasks older than specified days.
 
