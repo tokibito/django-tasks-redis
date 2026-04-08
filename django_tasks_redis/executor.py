@@ -436,10 +436,7 @@ def claim_stale_tasks(backend_name="default", claim_timeout=None):
                                         current_status = client.hget(
                                             result_key, "status"
                                         )
-                                        if (
-                                            current_status
-                                            == TaskResultStatus.RUNNING
-                                        ):
+                                        if current_status == TaskResultStatus.RUNNING:
                                             client.hset(
                                                 result_key,
                                                 "status",
