@@ -494,6 +494,8 @@ class RedisTaskBackend(BaseTaskBackend):
         self,
         queue_name=None,
         status=None,
+        task_path=None,
+        priority=None,
         offset=0,
         limit=100,
     ):
@@ -503,6 +505,8 @@ class RedisTaskBackend(BaseTaskBackend):
         Args:
             queue_name: Optional queue name filter.
             status: Optional status filter.
+            task_path: Optional task path filter.
+            priority: Optional priority filter (as string).
             offset: Starting offset.
             limit: Maximum number of results.
 
@@ -531,6 +535,10 @@ class RedisTaskBackend(BaseTaskBackend):
                 continue
             if status and task_data.get("status") != status:
                 continue
+            if task_path and task_data.get("task_path") != task_path:
+                continue
+            if priority and task_data.get("priority") != str(priority):
+                continue
 
             tasks.append(task_data)
 
@@ -543,6 +551,29 @@ class RedisTaskBackend(BaseTaskBackend):
         tasks = tasks[offset : offset + limit]
 
         return tasks, total
+
+    def get_distinct_field_values(self, field_name):
+        """
+        Get distinct values for a given field across all tasks.
+
+        Args:
+            field_name: The task field to collect distinct values for.
+
+        Returns:
+            Sorted list of distinct values.
+        """
+        client = self.get_client()
+        results_index_key = get_results_index_key(self.key_prefix, self.alias)
+        task_ids = client.smembers(results_index_key)
+
+        values = set()
+        for task_id in task_ids:
+            result_key = get_result_key(self.key_prefix, self.alias, task_id)
+            value = client.hget(result_key, field_name)
+            if value:
+                values.add(value)
+
+        return sorted(values)
 
     def get_task_data(self, task_id):
         """

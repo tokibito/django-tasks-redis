@@ -510,6 +510,8 @@ def get_tasks(
     backend_name="default",
     queue_name=None,
     status=None,
+    task_path=None,
+    priority=None,
     offset=0,
     limit=100,
     order_by="-enqueued_at",
@@ -521,6 +523,8 @@ def get_tasks(
         backend_name: Backend name.
         queue_name: Optional queue name filter.
         status: Optional status filter.
+        task_path: Optional task path filter.
+        priority: Optional priority filter.
         offset: Starting offset.
         limit: Maximum number of results.
         order_by: Sort order (ignored, always -enqueued_at).
@@ -532,9 +536,26 @@ def get_tasks(
     return backend.get_all_tasks(
         queue_name=queue_name,
         status=status,
+        task_path=task_path,
+        priority=priority,
         offset=offset,
         limit=limit,
     )
+
+
+def get_distinct_field_values(field_name, backend_name="default"):
+    """
+    Get distinct values for a given task field.
+
+    Args:
+        field_name: The task field name.
+        backend_name: Backend name.
+
+    Returns:
+        Sorted list of distinct values.
+    """
+    backend = task_backends[backend_name]
+    return backend.get_distinct_field_values(field_name)
 
 
 def get_task_by_id(task_id, backend_name="default"):
