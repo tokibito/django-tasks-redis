@@ -425,7 +425,27 @@ def claim_stale_tasks(backend_name="default", claim_timeout=None):
                             )
 
                             if claimed:
-                                claimed_count += 1
+                                for _msg_id, msg_data in claimed:
+                                    task_id = msg_data.get("task_id")
+                                    if task_id:
+                                        result_key = get_result_key(
+                                            backend.key_prefix,
+                                            backend_name,
+                                            task_id,
+                                        )
+                                        current_status = client.hget(
+                                            result_key, "status"
+                                        )
+                                        if (
+                                            current_status
+                                            == TaskResultStatus.RUNNING
+                                        ):
+                                            client.hset(
+                                                result_key,
+                                                "status",
+                                                TaskResultStatus.READY,
+                                            )
+                                claimed_count += len(claimed)
 
             except Exception:
                 # Stream or group doesn't exist
