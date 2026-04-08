@@ -8,7 +8,15 @@ from django.contrib.auth import get_user_model
 from django.test import Client, RequestFactory
 
 from django_tasks_redis import executor
-from django_tasks_redis.admin import RedisTask, RedisTaskAdmin, RedisTaskObject
+from django_tasks_redis.admin import (
+    PriorityFilter,
+    QueueNameFilter,
+    RedisTask,
+    RedisTaskAdmin,
+    RedisTaskObject,
+    StatusFilter,
+    TaskPathFilter,
+)
 
 
 @pytest.fixture
@@ -289,3 +297,130 @@ class TestRedisTaskAdminActions:
         assert executor.get_task_by_id(result1.id) is None
         assert executor.get_task_by_id(result2.id) is None
         assert executor.get_task_by_id(result3.id) is not None
+
+
+@pytest.mark.django_db
+class TestRedisTaskAdminFilters:
+    """Tests for admin list filters."""
+
+    def test_list_filter_configured(self, redis_task_admin):
+        """Test that list_filter includes all four filters."""
+        assert StatusFilter in redis_task_admin.list_filter
+        assert QueueNameFilter in redis_task_admin.list_filter
+        assert TaskPathFilter in redis_task_admin.list_filter
+        assert PriorityFilter in redis_task_admin.list_filter
+
+    def test_status_filter_lookups(self, redis_task_admin, clean_redis):
+        """Test that StatusFilter returns correct lookups."""
+        from tests.tasks import failing_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        result = failing_task.enqueue()
+        executor.run_task_by_id(result.id)
+
+        request = RequestFactory().get("/")
+        f = StatusFilter(request, {}, RedisTask, redis_task_admin)
+        lookups = f.lookups(request, redis_task_admin)
+        values = [v for v, _ in lookups]
+
+        assert "READY" in values
+        assert "FAILED" in values
+
+    def test_queue_name_filter_lookups(self, redis_task_admin, clean_redis):
+        """Test that QueueNameFilter returns correct lookups."""
+        from tests.tasks import email_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        email_task.enqueue("a@b.com", "Hi", "Body")
+
+        request = RequestFactory().get("/")
+        f = QueueNameFilter(request, {}, RedisTask, redis_task_admin)
+        lookups = f.lookups(request, redis_task_admin)
+        values = [v for v, _ in lookups]
+
+        assert "default" in values
+        assert "emails" in values
+
+    def test_task_path_filter_lookups(self, redis_task_admin, clean_redis):
+        """Test that TaskPathFilter returns correct lookups."""
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+
+        request = RequestFactory().get("/")
+        f = TaskPathFilter(request, {}, RedisTask, redis_task_admin)
+        lookups = f.lookups(request, redis_task_admin)
+        values = [v for v, _ in lookups]
+
+        assert "tests.tasks.simple_task" in values
+
+    def test_priority_filter_lookups(self, redis_task_admin, clean_redis):
+        """Test that PriorityFilter returns correct lookups."""
+        from tests.tasks import high_priority_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        high_priority_task.enqueue()
+
+        request = RequestFactory().get("/")
+        f = PriorityFilter(request, {}, RedisTask, redis_task_admin)
+        lookups = f.lookups(request, redis_task_admin)
+        values = [v for v, _ in lookups]
+
+        assert "0" in values
+        assert "10" in values
+
+    def test_changelist_filter_by_status(self, admin_client, clean_redis):
+        """Test filtering changelist by status."""
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        result2 = simple_task.enqueue(3, 4)
+        executor.run_task_by_id(result2.id)
+
+        response = admin_client.get("/admin/django_tasks_redis/redistask/?status=READY")
+        assert response.status_code == 200
+
+    def test_changelist_filter_by_queue_name(self, admin_client, clean_redis):
+        """Test filtering changelist by queue name."""
+        from tests.tasks import email_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        email_task.enqueue("a@b.com", "Hi", "Body")
+
+        response = admin_client.get(
+            "/admin/django_tasks_redis/redistask/?queue_name=emails"
+        )
+        assert response.status_code == 200
+
+    def test_changelist_filter_by_task_path(self, admin_client, clean_redis):
+        """Test filtering changelist by task path."""
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+
+        response = admin_client.get(
+            "/admin/django_tasks_redis/redistask/?task_path=tests.tasks.simple_task"
+        )
+        assert response.status_code == 200
+
+    def test_changelist_filter_by_priority(self, admin_client, clean_redis):
+        """Test filtering changelist by priority."""
+        from tests.tasks import high_priority_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        high_priority_task.enqueue()
+
+        response = admin_client.get("/admin/django_tasks_redis/redistask/?priority=10")
+        assert response.status_code == 200
+
+    def test_changelist_combined_filters(self, admin_client, clean_redis):
+        """Test filtering changelist with multiple filters."""
+        from tests.tasks import email_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        email_task.enqueue("a@b.com", "Hi", "Body")
+
+        response = admin_client.get(
+            "/admin/django_tasks_redis/redistask/?status=READY&queue_name=default"
+        )
+        assert response.status_code == 200

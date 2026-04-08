@@ -17,6 +17,7 @@ A Redis/Valkey-backed task queue backend for Django 6.0's built-in task framewor
 - Crash recovery with automatic task reclaim
 - Django Admin integration for task monitoring and management
 - HTTP endpoints for external triggers (webhooks, Cloud Scheduler, etc.)
+- Optional Prometheus metrics for monitoring (see [PROMETHEUS.md](PROMETHEUS.md))
 
 ## Architecture
 
@@ -72,6 +73,14 @@ sequenceDiagram
 ```bash
 pip install django-tasks-redis
 ```
+
+### Optional: Install with Prometheus metrics support
+
+```bash
+pip install django-tasks-redis[prometheus]
+```
+
+See [PROMETHEUS.md](PROMETHEUS.md) for monitoring and metrics configuration.
 
 ## Quick Start
 
@@ -236,6 +245,16 @@ count = executor.get_pending_task_count()
 # Purge completed tasks
 deleted = executor.purge_completed_tasks(days=7)
 ```
+
+## Monitoring
+
+For production deployments, consider enabling Prometheus metrics to monitor:
+- Queue length and backlog
+- Task throughput and completion rates
+- Task execution duration
+- Failure rates
+
+See [PROMETHEUS.md](PROMETHEUS.md) for complete setup instructions and example dashboards.
 
 ## License
 

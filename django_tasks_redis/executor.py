@@ -425,7 +425,24 @@ def claim_stale_tasks(backend_name="default", claim_timeout=None):
                             )
 
                             if claimed:
-                                claimed_count += 1
+                                for _msg_id, msg_data in claimed:
+                                    task_id = msg_data.get("task_id")
+                                    if task_id:
+                                        result_key = get_result_key(
+                                            backend.key_prefix,
+                                            backend_name,
+                                            task_id,
+                                        )
+                                        current_status = client.hget(
+                                            result_key, "status"
+                                        )
+                                        if current_status == TaskResultStatus.RUNNING:
+                                            client.hset(
+                                                result_key,
+                                                "status",
+                                                TaskResultStatus.READY,
+                                            )
+                                claimed_count += len(claimed)
 
             except Exception:
                 # Stream or group doesn't exist
@@ -434,7 +451,9 @@ def claim_stale_tasks(backend_name="default", claim_timeout=None):
     return claimed_count
 
 
-def purge_completed_tasks(backend_name="default", days=7, statuses=None):
+def purge_completed_tasks(
+    backend_name="default", days=7, statuses=None, task_path=None
+):
     """
     Delete completed tasks older than specified days.
 
@@ -442,6 +461,7 @@ def purge_completed_tasks(backend_name="default", days=7, statuses=None):
         backend_name: Backend name (default: "default").
         days: Delete tasks finished more than this many days ago.
         statuses: List of statuses to delete. Default: [SUCCESSFUL, FAILED].
+        task_path: Optional task path filter. Only purge tasks with this task_path.
 
     Returns:
         Number of tasks deleted.
@@ -470,6 +490,10 @@ def purge_completed_tasks(backend_name="default", days=7, statuses=None):
         if status not in statuses:
             continue
 
+        # Filter by task_path if specified
+        if task_path and task_data.get("task_path") != task_path:
+            continue
+
         finished_at = deserialize_datetime(task_data.get("finished_at", ""))
         if finished_at and finished_at < cutoff:
             client.delete(result_key)
@@ -486,6 +510,8 @@ def get_tasks(
     backend_name="default",
     queue_name=None,
     status=None,
+    task_path=None,
+    priority=None,
     offset=0,
     limit=100,
     order_by="-enqueued_at",
@@ -497,6 +523,8 @@ def get_tasks(
         backend_name: Backend name.
         queue_name: Optional queue name filter.
         status: Optional status filter.
+        task_path: Optional task path filter.
+        priority: Optional priority filter.
         offset: Starting offset.
         limit: Maximum number of results.
         order_by: Sort order (ignored, always -enqueued_at).
@@ -508,9 +536,26 @@ def get_tasks(
     return backend.get_all_tasks(
         queue_name=queue_name,
         status=status,
+        task_path=task_path,
+        priority=priority,
         offset=offset,
         limit=limit,
     )
+
+
+def get_distinct_field_values(field_name, backend_name="default"):
+    """
+    Get distinct values for a given task field.
+
+    Args:
+        field_name: The task field name.
+        backend_name: Backend name.
+
+    Returns:
+        Sorted list of distinct values.
+    """
+    backend = task_backends[backend_name]
+    return backend.get_distinct_field_values(field_name)
 
 
 def get_task_by_id(task_id, backend_name="default"):

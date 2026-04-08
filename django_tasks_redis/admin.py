@@ -7,6 +7,7 @@ in the database, this uses a custom approach with executor API.
 """
 
 from django.contrib import admin, messages
+from django.contrib.admin import SimpleListFilter
 from django.contrib.admin.views.main import ChangeList
 from django.core.paginator import Paginator
 from django.db import models
@@ -17,6 +18,54 @@ from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
 from . import executor
+
+
+class StatusFilter(SimpleListFilter):
+    title = _("Status")
+    parameter_name = "status"
+
+    def lookups(self, request, model_admin):
+        values = executor.get_distinct_field_values("status")
+        return [(v, v) for v in values]
+
+    def queryset(self, request, queryset):
+        return queryset
+
+
+class QueueNameFilter(SimpleListFilter):
+    title = _("Queue")
+    parameter_name = "queue_name"
+
+    def lookups(self, request, model_admin):
+        values = executor.get_distinct_field_values("queue_name")
+        return [(v, v) for v in values]
+
+    def queryset(self, request, queryset):
+        return queryset
+
+
+class TaskPathFilter(SimpleListFilter):
+    title = _("Task Path")
+    parameter_name = "task_path"
+
+    def lookups(self, request, model_admin):
+        values = executor.get_distinct_field_values("task_path")
+        return [(v, v) for v in values]
+
+    def queryset(self, request, queryset):
+        return queryset
+
+
+class PriorityFilter(SimpleListFilter):
+    title = _("Priority")
+    parameter_name = "priority"
+
+    def lookups(self, request, model_admin):
+        values = executor.get_distinct_field_values("priority")
+        return [(v, v) for v in values]
+
+    def queryset(self, request, queryset):
+        return queryset
 
 
 class RedisTaskObject:
@@ -70,16 +119,27 @@ class RedisTaskChangeList(ChangeList):
 
     def get_results(self, request):
         # Fetch tasks from Redis
-        page_num = int(request.GET.get("p", 0))
+        # Django Admin uses 1-based page numbers (p=1 for first page, p=2 for second, etc.)
+        # When p is not provided, it defaults to first page
+        page_num = int(request.GET.get("p", 1))
         per_page = self.list_per_page
 
-        # Get status filter if any
+        # Get filter values from request
         status_filter = request.GET.get("status")
+        queue_name_filter = request.GET.get("queue_name")
+        task_path_filter = request.GET.get("task_path")
+        priority_filter = request.GET.get("priority")
+
+        # Calculate 0-based offset for slicing
+        offset = (page_num - 1) * per_page
 
         tasks, total = executor.get_tasks(
             backend_name="default",
             status=status_filter,
-            offset=page_num * per_page,
+            queue_name=queue_name_filter,
+            task_path=task_path_filter,
+            priority=priority_filter,
+            offset=offset,
             limit=per_page,
         )
 
@@ -125,6 +185,7 @@ class RedisTaskAdmin(admin.ModelAdmin):
         "get_queue_name",
         "get_enqueued_at",
     ]
+    list_filter = [StatusFilter, QueueNameFilter, TaskPathFilter, PriorityFilter]
     list_per_page = 50
     search_fields = ["task_id"]
     actions = ["run_selected_tasks", "retry_failed_tasks", "delete_selected_tasks"]
