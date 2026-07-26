@@ -36,7 +36,7 @@ sequenceDiagram
     Backend-->>App: TaskResult (id, status=READY)
 
     Note over App,Worker: Task Execution
-    Worker->>Redis: XREADGROUP (consumer group)<br/>(blocks waiting for messages)
+    Worker->>Redis: XREADGROUP (consumer group)<br/>(own pending messages, then new ones)
     Redis-->>Worker: Message with task_id
     Worker->>Redis: HGET task data
     Redis-->>Worker: Task data
@@ -47,12 +47,12 @@ sequenceDiagram
     else Failure
         Worker->>Redis: HSET status=FAILED,<br/>errors, finished_at
     end
-    Worker->>Redis: XACK (acknowledge message)
+    Worker->>Redis: XACK + XDEL (acknowledge and reclaim)
 
     Note over App,Worker: Crash Recovery
-    Worker->>Redis: XAUTOCLAIM stale messages<br/>(claim_timeout exceeded)
-    Redis-->>Worker: Reclaimed messages
-    Worker->>Worker: Re-execute tasks
+    Worker->>Redis: XPENDING + XCLAIM stale messages<br/>(claim_timeout exceeded)
+    Redis-->>Worker: Messages reassigned to this consumer
+    Worker->>Worker: Re-execute tasks<br/>(up to REDIS_MAX_DELIVERIES)
 
     Note over App,Worker: Result Retrieval (Optional)
     App->>Backend: backend.get_result(task_id)
@@ -154,6 +154,8 @@ TASKS = {
             "REDIS_CONSUMER_GROUP": "django_tasks_workers",  # Consumer group name
             "REDIS_CLAIM_TIMEOUT": 300,  # Stale message claim timeout (seconds)
             "REDIS_BLOCK_TIMEOUT": 5000,  # XREADGROUP block timeout (milliseconds)
+            "REDIS_MAX_DELIVERIES": 5,  # Give up on a message after this many attempts (0 = never)
+            "REDIS_SCAN_BATCH_SIZE": 500,  # Tasks read per round trip when walking the index
         },
     },
 }
@@ -179,6 +181,24 @@ Note that redis-py's default `Retry` multiplies the connect timeout. With
 policy in redis-py 8.x stretches a 2.0 s wait to roughly 25 s, so the actual
 wait can be much longer than the configured value.
 
+### Delivery guarantees
+
+Tasks are delivered **at least once**. A worker that dies leaves its message
+pending; another worker reclaims it after `REDIS_CLAIM_TIMEOUT` and runs it
+again. Two consequences are worth planning for:
+
+- **`REDIS_CLAIM_TIMEOUT` must be longer than your longest task.** A task still
+  running after the timeout looks exactly like a dead worker at the queue
+  level, and will be reclaimed and executed a second time.
+- **Task functions should be idempotent.** A worker can die between finishing
+  the work and recording the result, in which case the task runs again.
+
+A message that keeps coming back is given up on after `REDIS_MAX_DELIVERIES`
+attempts: the task is marked FAILED with a `TaskAbandoned` error, so it shows up
+in the admin instead of being retried forever. Redis counts a redelivery as well
+as a reclaim, so the default of 5 is roughly two recovery attempts. Set it to
+`0` to disable the cap.
+
 ## Management Commands
 
 ### run_redis_tasks
@@ -199,6 +219,11 @@ Options:
 
 A worker handles one task at a time. Run several processes to process more,
 each gets its own consumer in the group.
+
+In `--continuous` mode the worker waits on the streams for up to
+`REDIS_BLOCK_TIMEOUT` instead of polling, so `--interval` only applies when
+that wait is disabled (`REDIS_BLOCK_TIMEOUT: 0`). The block timeout also bounds
+how long a shutdown signal can take to be noticed.
 
 ### purge_completed_redis_tasks
 

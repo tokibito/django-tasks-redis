@@ -113,6 +113,34 @@ class TestPurgeCompletedRedisTasksCommand:
         output = out.getvalue()
         assert "Deleted 1 task(s)" in output
 
+    def test_purge_honours_batch_size(self, redis_backend, clean_redis):
+        """--batch-size changes how tasks are read, not what is deleted."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from django_tasks_redis import executor
+        from django_tasks_redis.utils import get_result_key, serialize_datetime
+        from tests.tasks import simple_task
+
+        client = redis_backend.get_client()
+        old_time = timezone.now() - timedelta(days=10)
+        for numbers in ((1, 1), (2, 2), (3, 3)):
+            result = simple_task.enqueue(*numbers)
+            executor.run_task_by_id(result.id)
+            client.hset(
+                get_result_key(
+                    redis_backend.key_prefix, redis_backend.alias, result.id
+                ),
+                "finished_at",
+                serialize_datetime(old_time),
+            )
+
+        out = StringIO()
+        call_command("purge_completed_redis_tasks", days=7, batch_size=1, stdout=out)
+
+        assert "Deleted 3 task(s)" in out.getvalue()
+
     def test_purge_with_status_filter(self, clean_redis):
         """Test purge with status filter."""
         out = StringIO()

@@ -52,6 +52,7 @@ class Command(BaseCommand):
         statuses = options["statuses"]
         dry_run = options["dry_run"]
         backend_name = options["backend_name"]
+        batch_size = options["batch_size"]
 
         # Default statuses if not specified
         if not statuses:
@@ -68,47 +69,13 @@ class Command(BaseCommand):
                 self.style.WARNING("  DRY RUN - no tasks will be deleted")
             )
 
-            # Get count of tasks that would be deleted
-            from django.tasks import task_backends
-            from django.utils import timezone
+        count = executor.purge_completed_tasks(
+            backend_name=backend_name,
+            days=days,
+            statuses=statuses,
+            batch_size=batch_size,
+            dry_run=dry_run,
+        )
 
-            from django_tasks_redis.utils import (
-                deserialize_datetime,
-                get_result_key,
-                get_results_index_key,
-            )
-
-            backend = task_backends[backend_name]
-            client = backend.get_client()
-            results_index_key = get_results_index_key(backend.key_prefix, backend_name)
-
-            cutoff = timezone.now() - timezone.timedelta(days=days)
-            would_delete = 0
-
-            task_ids = client.smembers(results_index_key)
-            for task_id in task_ids:
-                result_key = get_result_key(backend.key_prefix, backend_name, task_id)
-                task_data = client.hgetall(result_key)
-
-                if not task_data:
-                    continue
-
-                status = task_data.get("status")
-                if status not in [str(s) for s in statuses]:
-                    continue
-
-                finished_at = deserialize_datetime(task_data.get("finished_at", ""))
-                if finished_at and finished_at < cutoff:
-                    would_delete += 1
-
-            self.stdout.write(
-                self.style.SUCCESS(f"\nWould delete {would_delete} task(s)")
-            )
-        else:
-            deleted_count = executor.purge_completed_tasks(
-                backend_name=backend_name,
-                days=days,
-                statuses=statuses,
-            )
-
-            self.stdout.write(self.style.SUCCESS(f"\nDeleted {deleted_count} task(s)"))
+        verb = "Would delete" if dry_run else "Deleted"
+        self.stdout.write(self.style.SUCCESS(f"\n{verb} {count} task(s)"))

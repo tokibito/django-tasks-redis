@@ -2,13 +2,17 @@
 Management command to run Redis task worker.
 """
 
+import logging
 import signal
 import time
 
 from django.core.management.base import BaseCommand
+from django.tasks import task_backends
 from django.utils.translation import gettext_lazy as _
 
 from django_tasks_redis import executor
+
+logger = logging.getLogger("django_tasks_redis")
 
 
 class Command(BaseCommand):
@@ -70,6 +74,11 @@ class Command(BaseCommand):
 
         worker_id = executor._generate_worker_id()
 
+        # Waiting removes up to `interval` of latency per task. Only continuous
+        # workers wait; a one-shot run exits as soon as the queue is empty.
+        block_timeout = getattr(task_backends[backend_name], "block_timeout", None)
+        block = block_timeout if continuous else None
+
         self.stdout.write(
             self.style.SUCCESS(f"Starting Redis task worker: {worker_id}")
         )
@@ -85,17 +94,27 @@ class Command(BaseCommand):
             # Check if we should claim stale tasks
             current_time = time.time()
             if current_time - last_claim_time >= claim_interval:
-                claimed = executor.claim_stale_tasks(backend_name=backend_name)
-                if claimed > 0:
-                    self.stdout.write(f"Claimed {claimed} stale task(s)")
                 last_claim_time = current_time
+                self._claim_stale_tasks(backend_name, worker_id)
 
-            # Process one task
-            result = executor.process_one_task(
-                queue_name=queue_name,
-                backend_name=backend_name,
-                worker_id=worker_id,
-            )
+            # A task that cannot even be started must not take the worker down
+            # with it: its message stays pending and is handed out again.
+            try:
+                result = executor.process_one_task(
+                    queue_name=queue_name,
+                    backend_name=backend_name,
+                    worker_id=worker_id,
+                    block=block,
+                )
+            except Exception:
+                logger.exception("Worker %s failed to process a task", worker_id)
+                self.stderr.write(
+                    self.style.ERROR("Failed to process a task, see the logs")
+                )
+                if not continuous:
+                    break
+                time.sleep(interval)
+                continue
 
             if result is not None:
                 tasks_processed += 1
@@ -121,12 +140,26 @@ class Command(BaseCommand):
                     self.stdout.write("No tasks available, exiting")
                     break
 
-                # Wait before polling again
-                time.sleep(interval)
+                # Wait before polling again, unless the fetch already waited.
+                if not block:
+                    time.sleep(interval)
 
         self.stdout.write(
             self.style.SUCCESS(f"Worker stopped. Processed {tasks_processed} task(s).")
         )
+
+    def _claim_stale_tasks(self, backend_name, worker_id):
+        """Take over the messages of workers that died, for this consumer."""
+        try:
+            claimed = executor.claim_stale_tasks(
+                backend_name=backend_name, worker_id=worker_id
+            )
+        except Exception:
+            logger.exception("Worker %s failed to claim stale tasks", worker_id)
+            return
+
+        if claimed > 0:
+            self.stdout.write(f"Claimed {claimed} stale task(s)")
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully."""
