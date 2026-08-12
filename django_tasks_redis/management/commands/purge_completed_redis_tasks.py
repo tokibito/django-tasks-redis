@@ -2,7 +2,7 @@
 Management command to purge completed Redis tasks.
 """
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.tasks.base import TaskResultStatus
 from django.utils.translation import gettext_lazy as _
 
@@ -53,6 +53,9 @@ class Command(BaseCommand):
         dry_run = options["dry_run"]
         backend_name = options["backend_name"]
         batch_size = options["batch_size"]
+
+        if days < 0:
+            raise CommandError(f"--days must not be negative, got {days}")
 
         # Default statuses if not specified
         if not statuses:

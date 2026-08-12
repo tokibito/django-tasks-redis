@@ -689,7 +689,15 @@ def purge_completed_tasks(
 
     Returns:
         Number of tasks deleted, or that would be deleted for a dry run.
+
+    Raises:
+        ValueError: If days is negative.
     """
+    if days < 0:
+        # A negative age puts the cutoff in the future, which matches every
+        # completed task: a typo would wipe the whole history.
+        raise ValueError(f"days must not be negative, got {days}")
+
     if statuses is None:
         statuses = [TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED]
 

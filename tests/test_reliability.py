@@ -359,6 +359,29 @@ class TestWorkerResilience:
 
 
 @pytest.mark.django_db
+class TestPurgeGuard:
+    """A cutoff in the future matches everything."""
+
+    def test_negative_days_is_refused(self, redis_backend, clean_redis):
+        from tests.tasks import simple_task
+
+        result = simple_task.enqueue(1, 2)
+        executor.run_task_by_id(result.id)
+
+        with pytest.raises(ValueError, match="must not be negative"):
+            executor.purge_completed_tasks(days=-1)
+
+        assert executor.get_task_by_id(result.id) is not None
+
+    def test_negative_days_is_refused_by_the_command(self, clean_redis):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with pytest.raises(CommandError, match="must not be negative"):
+            call_command("purge_completed_redis_tasks", days=-1)
+
+
+@pytest.mark.django_db
 class TestExternalTriggerClaim:
     """A task delivered twice by an external trigger must run once."""
 
