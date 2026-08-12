@@ -213,6 +213,47 @@ class TestGetRedisClient:
         assert caplog.text == ""
 
 
+class TestConnectionOptions:
+    """Tests for the connection settings passed to redis-py."""
+
+    @mock.patch("django_tasks_redis.utils.redis")
+    def test_url_passes_connection_options(self, mock_redis):
+        """URL config passes the connection settings it is given."""
+        get_redis_client(
+            {
+                "REDIS_URL": "redis://localhost:6379/0",
+                "REDIS_SOCKET_TIMEOUT": 30,
+                "REDIS_SOCKET_CONNECT_TIMEOUT": 5,
+                "REDIS_SOCKET_KEEPALIVE": True,
+                "REDIS_HEALTH_CHECK_INTERVAL": 30,
+            }
+        )
+        _, kwargs = mock_redis.Redis.from_url.call_args
+        assert kwargs["socket_timeout"] == 30
+        assert kwargs["socket_connect_timeout"] == 5
+        assert kwargs["socket_keepalive"] is True
+        assert kwargs["health_check_interval"] == 30
+
+    @mock.patch("django_tasks_redis.utils.redis")
+    def test_params_pass_connection_options(self, mock_redis):
+        """Individual params config passes the connection settings too."""
+        get_redis_client(
+            {
+                "REDIS_HOST": "localhost",
+                "REDIS_SOCKET_CONNECT_TIMEOUT": 5,
+            }
+        )
+        _, kwargs = mock_redis.Redis.call_args
+        assert kwargs["socket_connect_timeout"] == 5
+
+    @mock.patch("django_tasks_redis.utils.redis")
+    def test_socket_timeout_stays_unset(self, mock_redis):
+        """It applies to blocking reads, so it cannot have a default."""
+        get_redis_client({"REDIS_URL": "redis://localhost:6379/0"})
+        _, kwargs = mock_redis.Redis.from_url.call_args
+        assert "socket_timeout" not in kwargs
+
+
 class TestPriorityToLevel:
     """Tests for priority to level conversion."""
 

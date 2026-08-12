@@ -11,6 +11,26 @@ import redis
 
 logger = logging.getLogger("django_tasks_redis")
 
+# Without any of these, a half-open connection - a Redis restart, a network
+# partition - blocks a worker for as long as the kernel allows. REDIS_SOCKET_TIMEOUT
+# stays unset: it covers blocking reads too, so anything below REDIS_BLOCK_TIMEOUT
+# makes every fetch raise.
+CONNECTION_OPTIONS = {
+    "REDIS_SOCKET_TIMEOUT": ("socket_timeout", None),
+    "REDIS_SOCKET_CONNECT_TIMEOUT": ("socket_connect_timeout", None),
+    "REDIS_SOCKET_KEEPALIVE": ("socket_keepalive", None),
+    "REDIS_HEALTH_CHECK_INTERVAL": ("health_check_interval", None),
+}
+
+
+def get_connection_options(options: dict) -> dict:
+    resolved = {}
+    for option, (kwarg, default) in CONNECTION_OPTIONS.items():
+        value = options.get(option, default)
+        if value is not None:
+            resolved[kwarg] = value
+    return resolved
+
 
 def get_redis_client(options: dict) -> redis.Redis:
     """
@@ -24,8 +44,9 @@ def get_redis_client(options: dict) -> redis.Redis:
     Returns:
         redis.Redis: Configured Redis client instance.
     """
+    connection_kwargs = get_connection_options(options)
+
     # Add ssl_ca_certs only when REDIS_SSL_CA_CERTS is specified (self-signed CA).
-    connection_kwargs = {}
     ssl_ca_certs = options.get("REDIS_SSL_CA_CERTS")
     if ssl_ca_certs:
         connection_kwargs["ssl_ca_certs"] = ssl_ca_certs
