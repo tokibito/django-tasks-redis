@@ -135,9 +135,10 @@ class TestGetRedisClient:
     def test_url_without_ca_certs(self, mock_redis):
         """URL config does not pass ssl_ca_certs when unset."""
         get_redis_client({"REDIS_URL": "redis://localhost:6379/0"})
-        mock_redis.Redis.from_url.assert_called_once_with(
-            "redis://localhost:6379/0", decode_responses=True
-        )
+        args, kwargs = mock_redis.Redis.from_url.call_args
+        assert args == ("redis://localhost:6379/0",)
+        assert kwargs["decode_responses"] is True
+        assert "ssl_ca_certs" not in kwargs
 
     @mock.patch("django_tasks_redis.utils.redis")
     def test_url_with_ca_certs(self, mock_redis):
@@ -148,11 +149,10 @@ class TestGetRedisClient:
                 "REDIS_SSL_CA_CERTS": "/path/to/ca.pem",
             }
         )
-        mock_redis.Redis.from_url.assert_called_once_with(
-            "rediss://localhost:6379/0",
-            decode_responses=True,
-            ssl_ca_certs="/path/to/ca.pem",
-        )
+        args, kwargs = mock_redis.Redis.from_url.call_args
+        assert args == ("rediss://localhost:6379/0",)
+        assert kwargs["decode_responses"] is True
+        assert kwargs["ssl_ca_certs"] == "/path/to/ca.pem"
 
     @mock.patch("django_tasks_redis.utils.redis")
     def test_params_without_ca_certs(self, mock_redis):
@@ -252,6 +252,28 @@ class TestConnectionOptions:
         get_redis_client({"REDIS_URL": "redis://localhost:6379/0"})
         _, kwargs = mock_redis.Redis.from_url.call_args
         assert "socket_timeout" not in kwargs
+
+    @mock.patch("django_tasks_redis.utils.redis")
+    def test_connection_is_bounded_by_default(self, mock_redis):
+        """An unconfigured client still notices a connection that went away."""
+        get_redis_client({"REDIS_URL": "redis://localhost:6379/0"})
+        _, kwargs = mock_redis.Redis.from_url.call_args
+        assert kwargs["socket_connect_timeout"] == 5
+        assert kwargs["health_check_interval"] == 30
+
+    @mock.patch("django_tasks_redis.utils.redis")
+    def test_defaults_can_be_turned_off(self, mock_redis):
+        """0 is a real value, not a missing one."""
+        get_redis_client(
+            {
+                "REDIS_URL": "redis://localhost:6379/0",
+                "REDIS_SOCKET_CONNECT_TIMEOUT": 0,
+                "REDIS_HEALTH_CHECK_INTERVAL": 0,
+            }
+        )
+        _, kwargs = mock_redis.Redis.from_url.call_args
+        assert kwargs["socket_connect_timeout"] == 0
+        assert kwargs["health_check_interval"] == 0
 
 
 class TestPriorityToLevel:

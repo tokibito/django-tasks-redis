@@ -17,9 +17,9 @@ logger = logging.getLogger("django_tasks_redis")
 # makes every fetch raise.
 CONNECTION_OPTIONS = {
     "REDIS_SOCKET_TIMEOUT": ("socket_timeout", None),
-    "REDIS_SOCKET_CONNECT_TIMEOUT": ("socket_connect_timeout", None),
+    "REDIS_SOCKET_CONNECT_TIMEOUT": ("socket_connect_timeout", 5),
     "REDIS_SOCKET_KEEPALIVE": ("socket_keepalive", None),
-    "REDIS_HEALTH_CHECK_INTERVAL": ("health_check_interval", None),
+    "REDIS_HEALTH_CHECK_INTERVAL": ("health_check_interval", 30),
 }
 
 
