@@ -2,11 +2,14 @@
 Tests for admin module.
 """
 
+import warnings
+
 import pytest
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.test import Client, RequestFactory
+from django.utils.inspect import get_func_args
 
 from django_tasks_redis import executor
 from django_tasks_redis.admin import RedisTaskAdmin, RedisTaskObject
@@ -172,6 +175,20 @@ class TestRedisTaskAdmin:
         request.user = admin_user
 
         assert "delete_selected" not in redis_task_admin.get_actions(request)
+
+    def test_get_actions_takes_the_action_location_argument(self, redis_task_admin):
+        """Django warns about, and will drop, overrides that do not take it."""
+        assert "action_location" in get_func_args(redis_task_admin.get_actions)
+
+    @pytest.mark.django_db
+    def test_changelist_does_not_warn_about_the_admin_api(
+        self, admin_client, clean_redis
+    ):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            admin_client.get("/admin/django_tasks_redis/redistask/")
+
+        assert [str(w.message) for w in caught if "deprecated" in str(w.message)] == []
 
 
 @pytest.mark.django_db

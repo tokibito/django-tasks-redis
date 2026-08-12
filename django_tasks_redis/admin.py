@@ -136,13 +136,16 @@ class RedisTaskAdmin(admin.ModelAdmin):
         codename = get_permission_codename("run", self.opts)
         return request.user.has_perm(f"{self.opts.app_label}.{codename}")
 
-    def get_actions(self, request):
+    def get_actions(self, request, action_location=None):
         """Drop Django's built-in delete action.
 
         It deletes from a queryset, and this ChangeList has none: it would
         report success while deleting nothing.
         """
-        actions = super().get_actions(request)
+        # Django 6.1 passes action_location and warns without it; 6.0 neither
+        # passes nor accepts it. Forward only what the caller sent.
+        kwargs = {} if action_location is None else {"action_location": action_location}
+        actions = super().get_actions(request, **kwargs)
         actions.pop("delete_selected", None)
         return actions
 
