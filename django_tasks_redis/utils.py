@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Any
 
 import redis
+from django.conf import settings
+from django.utils import timezone
 
 logger = logging.getLogger("django_tasks_redis")
 
@@ -103,6 +105,11 @@ def deserialize_datetime(value: str) -> datetime | None:
     """
     Deserialize an ISO format string to datetime.
 
+    The result is always comparable with timezone.now(): a value written under
+    a different USE_TZ is converted rather than returned as is, so a setting
+    change or a producer and a consumer that disagree cannot raise "can't
+    compare offset-naive and offset-aware datetimes" deep in a worker.
+
     Args:
         value: ISO format string or empty string.
 
@@ -111,7 +118,15 @@ def deserialize_datetime(value: str) -> datetime | None:
     """
     if not value:
         return None
-    return datetime.fromisoformat(value)
+
+    parsed = datetime.fromisoformat(value)
+    # Read and write a naive value in the current time zone, which is what
+    # wrote it, so the instant survives the conversion either way.
+    if settings.USE_TZ and timezone.is_naive(parsed):
+        return timezone.make_aware(parsed)
+    if not settings.USE_TZ and timezone.is_aware(parsed):
+        return timezone.make_naive(parsed)
+    return parsed
 
 
 def serialize_json(value: Any) -> str:

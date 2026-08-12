@@ -5,6 +5,9 @@ Tests for utils module.
 from datetime import UTC, datetime
 from unittest import mock
 
+from django.test import override_settings
+from django.utils import timezone
+
 from django_tasks_redis.utils import (
     deserialize_datetime,
     deserialize_json,
@@ -52,6 +55,27 @@ class TestDeserializeDatetime:
         """Test deserializing falsy value."""
         result = deserialize_datetime(None)
         assert result is None
+
+    def test_naive_value_is_comparable_under_use_tz(self):
+        """A value written with USE_TZ off still compares with timezone.now()."""
+        result = deserialize_datetime("2024-01-15T10:30:00")
+
+        assert timezone.is_aware(result)
+        assert result < timezone.now()
+
+    @override_settings(USE_TZ=False)
+    def test_aware_value_is_comparable_without_use_tz(self):
+        """A value written by a process that had USE_TZ on, read by one without."""
+        result = deserialize_datetime("2024-01-15T10:30:00+00:00")
+
+        assert timezone.is_naive(result)
+        assert result < timezone.now()
+
+    def test_normalising_preserves_the_instant(self):
+        """The conversion changes the representation, not the point in time."""
+        written = timezone.now()
+
+        assert deserialize_datetime(serialize_datetime(written)) == written
 
 
 class TestSerializeJson:
