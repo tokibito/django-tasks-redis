@@ -17,6 +17,7 @@ A Redis/Valkey-backed task queue backend for Django 6.0's built-in task framewor
 - Crash recovery with automatic task reclaim
 - Django Admin integration for task monitoring and management
 - HTTP endpoints for external triggers (webhooks, Cloud Scheduler, etc.)
+- Optional Prometheus metrics for monitoring (see [PROMETHEUS.md](PROMETHEUS.md))
 
 ## Architecture
 
@@ -72,6 +73,14 @@ sequenceDiagram
 ```bash
 pip install django-tasks-redis
 ```
+
+### Optional: Install with Prometheus metrics support
+
+```bash
+pip install django-tasks-redis[prometheus]
+```
+
+See [PROMETHEUS.md](PROMETHEUS.md) for monitoring and metrics configuration.
 
 ## Quick Start
 
@@ -149,6 +158,9 @@ TASKS = {
             "REDIS_CONSUMER_GROUP": "django_tasks_workers",  # Consumer group name
             "REDIS_CLAIM_TIMEOUT": 300,  # Stale message claim timeout (seconds)
             "REDIS_BLOCK_TIMEOUT": 5000,  # XREADGROUP block timeout (milliseconds)
+            "REDIS_STREAM_MAXLEN": 10000,  # Approximate stream length target; acked history above it is trimmed, None disables
+            "REDIS_STREAM_TRIM_INTERVAL": 60,  # How often (seconds, per process) to check streams for trimming
+            "REDIS_CONSUMER_IDLE_TIMEOUT": 86400,  # Reap consumers idle this long (seconds) with no pending entries; None/0 disables
         },
     },
 }
@@ -170,6 +182,8 @@ Options:
   --interval SECONDS      Polling interval (default: 1)
   --max-tasks N           Maximum tasks to process (0=unlimited)
   --claim-interval SECS   Stale task claim interval (default: 60)
+  --consumer-reap-interval SECS
+                          How often to reap idle consumers (default: 3600)
 ```
 
 A worker handles one task at a time. Run several processes to process more,
@@ -189,6 +203,52 @@ Options:
   --dry-run               Only show count, don't delete
   --backend BACKEND_NAME  Backend name (default: default)
 ```
+
+### rebuild_redis_task_index
+
+Build (or rebuild) the per-status task index used for fast status counts and
+Prometheus metrics:
+
+```bash
+python manage.py rebuild_redis_task_index [--backend BACKEND_NAME]
+```
+
+New installations get the index automatically. Deployments upgrading from a
+version without it should run this once — or simply start a worker, which
+builds it on startup. Until the index exists, status counts fall back to
+scanning every stored result (one HGETALL per result key).
+
+## Operational Notes
+
+### Stream trimming
+
+Acknowledged entries stay in a Redis stream forever unless trimmed. When a
+stream exceeds `REDIS_STREAM_MAXLEN` (default 10000), it is trimmed with
+`XTRIM MINID` at the consumer group's safe position — the group's oldest
+pending entry, or its last-delivered ID when nothing is pending. Undelivered
+backlog and pending (in-flight) entries are therefore never trimmed: the
+stream may exceed the target while a genuine backlog exists, and shrinks
+back once entries are processed and acknowledged. The check runs at most
+once per `REDIS_STREAM_TRIM_INTERVAL` seconds (default 60) per process and
+stream. Set `REDIS_STREAM_MAXLEN` to `None` to disable trimming.
+
+### Delivery semantics
+
+Task delivery is at-least-once. A message pending longer than
+`REDIS_CLAIM_TIMEOUT` (default 300 seconds) is presumed abandoned: the
+stale-claim cycle resets the task from RUNNING back to READY and requeues it
+for any worker. Set `REDIS_CLAIM_TIMEOUT` comfortably above your longest
+task's runtime, or a slow task still running will be requeued and executed a
+second time.
+
+### Consumer lifecycle
+
+Each worker registers a stream consumer. Workers remove their consumer on
+graceful shutdown (requeueing any entries still pending for it first), and
+periodically reap consumers that hold no pending entries and have been idle
+longer than `REDIS_CONSUMER_IDLE_TIMEOUT` (default 24 hours). Consumers that
+still own pending entries are never reaped; the stale-claim cycle requeues
+their entries first, after which they become reapable.
 
 ## Django Admin
 
@@ -258,6 +318,16 @@ count = executor.get_pending_task_count()
 # Purge completed tasks
 deleted = executor.purge_completed_tasks(days=7)
 ```
+
+## Monitoring
+
+For production deployments, consider enabling Prometheus metrics to monitor:
+- Queue length and backlog
+- Task throughput and completion rates
+- Task execution duration
+- Failure rates
+
+See [PROMETHEUS.md](PROMETHEUS.md) for complete setup instructions and example dashboards.
 
 ## License
 

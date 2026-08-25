@@ -7,6 +7,7 @@ in the database, this uses a custom approach with executor API.
 """
 
 from django.contrib import admin, messages
+from django.contrib.admin import SimpleListFilter
 from django.contrib.admin.views.main import ChangeList
 from django.contrib.auth import get_permission_codename
 from django.core.exceptions import PermissionDenied
@@ -19,6 +20,54 @@ from django.utils.translation import gettext_lazy as _
 
 from . import executor
 from .models import RedisTask
+
+
+class StatusFilter(SimpleListFilter):
+    title = _("Status")
+    parameter_name = "status"
+
+    def lookups(self, request, model_admin):
+        values = executor.get_distinct_field_values("status")
+        return [(v, v) for v in values]
+
+    def queryset(self, request, queryset):
+        return queryset
+
+
+class QueueNameFilter(SimpleListFilter):
+    title = _("Queue")
+    parameter_name = "queue_name"
+
+    def lookups(self, request, model_admin):
+        values = executor.get_distinct_field_values("queue_name")
+        return [(v, v) for v in values]
+
+    def queryset(self, request, queryset):
+        return queryset
+
+
+class TaskPathFilter(SimpleListFilter):
+    title = _("Task Path")
+    parameter_name = "task_path"
+
+    def lookups(self, request, model_admin):
+        values = executor.get_distinct_field_values("task_path")
+        return [(v, v) for v in values]
+
+    def queryset(self, request, queryset):
+        return queryset
+
+
+class PriorityFilter(SimpleListFilter):
+    title = _("Priority")
+    parameter_name = "priority"
+
+    def lookups(self, request, model_admin):
+        values = executor.get_distinct_field_values("priority")
+        return [(v, v) for v in values]
+
+    def queryset(self, request, queryset):
+        return queryset
 
 
 class RedisTaskObject:
@@ -78,8 +127,11 @@ class RedisTaskChangeList(ChangeList):
         # as 0-indexed shifts every page by one.
         offset = max(self.page_num - 1, 0) * per_page
 
-        # Get status filter if any
+        # Get filter values from request
         status_filter = request.GET.get("status")
+        queue_name_filter = request.GET.get("queue_name")
+        task_path_filter = request.GET.get("task_path")
+        priority_filter = request.GET.get("priority")
 
         if self.query:
             # search_fields only holds task_id, and a task id is an exact key.
@@ -90,6 +142,9 @@ class RedisTaskChangeList(ChangeList):
             tasks, total = executor.get_tasks(
                 backend_name="default",
                 status=status_filter,
+                queue_name=queue_name_filter,
+                task_path=task_path_filter,
+                priority=priority_filter,
                 offset=offset,
                 limit=per_page,
             )
@@ -119,6 +174,7 @@ class RedisTaskAdmin(admin.ModelAdmin):
         "get_queue_name",
         "get_enqueued_at",
     ]
+    list_filter = [StatusFilter, QueueNameFilter, TaskPathFilter, PriorityFilter]
     list_per_page = 50
     search_fields = ["task_id"]
     actions = ["run_selected_tasks", "retry_failed_tasks", "delete_selected_tasks"]

@@ -200,6 +200,61 @@ def get_results_index_key(key_prefix: str, backend_name: str) -> str:
     return f"{key_prefix}:{backend_name}:results_index"
 
 
+def get_status_index_key(key_prefix: str, backend_name: str, status: str) -> str:
+    """
+    Generate Redis Sorted Set key for the per-status task index.
+
+    The member is the task_id; the score is the timestamp the task entered
+    the status (enqueued_at for READY, transition time otherwise), which
+    allows expired entries to be pruned by score.
+
+    Args:
+        key_prefix: Key prefix from settings.
+        backend_name: Backend name.
+        status: Task status value (e.g. "READY").
+
+    Returns:
+        Status index key string.
+    """
+    return f"{key_prefix}:{backend_name}:status_index:{status}"
+
+
+def get_queue_status_index_key(
+    key_prefix: str, backend_name: str, queue_name: str, status: str
+) -> str:
+    """
+    Generate Redis Sorted Set key for the per-queue, per-status task index.
+
+    Args:
+        key_prefix: Key prefix from settings.
+        backend_name: Backend name.
+        queue_name: Queue name.
+        status: Task status value (e.g. "READY").
+
+    Returns:
+        Queue-scoped status index key string.
+    """
+    return f"{key_prefix}:{backend_name}:status_index:queue:{queue_name}:{status}"
+
+
+def get_status_index_synced_key(key_prefix: str, backend_name: str) -> str:
+    """
+    Generate the marker key that signals the status index has been built.
+
+    While this key is absent, readers fall back to scanning the results
+    index so that deployments upgrading from older versions keep returning
+    correct counts until the index is rebuilt.
+
+    Args:
+        key_prefix: Key prefix from settings.
+        backend_name: Backend name.
+
+    Returns:
+        Marker key string.
+    """
+    return f"{key_prefix}:{backend_name}:status_index:synced"
+
+
 def priority_to_level(priority: int) -> str:
     """
     Convert numeric priority to level string.
