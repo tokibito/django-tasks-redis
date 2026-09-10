@@ -4,14 +4,17 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -19,7 +22,25 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y gettext
           python -m pip install --upgrade pip
-          pip install build Django
+          pip install build twine Django
+
+      # The version lives in pyproject.toml and in __init__.py, and the
+      # release tag is created by hand. Fail early instead of uploading a
+      # version nobody meant to release.
+      - name: Check the version matches the release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          tag_version="${RELEASE_TAG#v}"
+          project_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          module_version="$(python -c 'import re; print(re.search(r"^__version__ = \"(.+)\"$", open("django_tasks_redis/__init__.py").read(), re.M)[1])')"
+          echo "release tag:    ${tag_version}"
+          echo "pyproject.toml: ${project_version}"
+          echo "__init__.py:    ${module_version}"
+          if [ "${tag_version}" != "${project_version}" ] || [ "${tag_version}" != "${module_version}" ]; then
+            echo "::error::Version mismatch between the release tag, pyproject.toml and __init__.py"
+            exit 1
+          fi
 
       # Only .po files are in the repository, and gettext reads .mo at runtime,
       # so translations have to be compiled before the package is built.
@@ -30,8 +51,11 @@ jobs:
       - name: Build package
         run: python -m build
 
+      - name: Check package metadata
+        run: twine check --strict dist/*
+
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -46,7 +70,7 @@ jobs:
       id-token: write
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -55,6 +79,9 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          # TestPyPI rejects re-uploads of an existing version, and a
+          # failure here would block the PyPI job below.
+          skip-existing: true
 
   publish-pypi:
     needs: publish-testpypi
@@ -66,7 +93,7 @@ jobs:
       id-token: write
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
