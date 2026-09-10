@@ -238,6 +238,36 @@ Available endpoints:
 - `GET /tasks/status/<task_id>/` - Get task status
 - `POST /tasks/purge/` - Purge completed tasks
 
+These endpoints run tasks, expose their arguments and results, and delete task
+history, so they answer `403` until the backend says how to authenticate them.
+Override `get_auth_handler()` to open them. The handler returns `None` to let
+the request through, or a response to refuse it:
+
+```python
+from django.conf import settings
+from django.http import JsonResponse
+
+from django_tasks_redis.backends import RedisTaskBackend
+
+
+class MyTaskBackend(RedisTaskBackend):
+    def get_auth_handler(self):
+        def handler(request):
+            if request.headers.get("X-Task-Token") != settings.TASK_ENDPOINT_TOKEN:
+                return JsonResponse({"error": "Forbidden"}, status=403)
+            return None
+
+        return handler
+```
+
+Then point `BACKEND` at `myapp.backends.MyTaskBackend`. The endpoints are
+`csrf_exempt`, so the handler is the only thing standing between the caller and
+task execution: authenticate on something the caller has to prove, not on
+anything the request can claim about itself.
+
+`POST /tasks/run/` drains the whole queue in the request by default; pass
+`max_tasks` to bound it.
+
 ## Public API
 
 The `executor` module provides functions for programmatic task management:

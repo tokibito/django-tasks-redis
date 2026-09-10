@@ -5,6 +5,15 @@ pytest configuration and fixtures for django-tasks-redis tests.
 import pytest
 import redis as redis_lib
 from django.tasks import task_backends
+from django.test import Client
+
+from tests.backends import TASK_ENDPOINT_TOKEN
+
+
+@pytest.fixture
+def auth_client():
+    """Test client carrying the token the endpoints of the test backend want."""
+    return Client(headers={"x-task-token": TASK_ENDPOINT_TOKEN})
 
 
 @pytest.fixture(scope="session")

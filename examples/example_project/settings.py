@@ -76,9 +76,12 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Task backend configuration
+# Shared secret the demo backend expects on the HTTP task endpoints.
+TASK_ENDPOINT_TOKEN = "demo-token"
+
 TASKS = {
     "default": {
-        "BACKEND": "django_tasks_redis.RedisTaskBackend",
+        "BACKEND": "demo_app.backends.TokenAuthRedisTaskBackend",
         "QUEUES": [],  # Empty list = allow all queue names
         "OPTIONS": {
             "REDIS_URL": "redis://localhost:6379/0",

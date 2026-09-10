@@ -107,6 +107,20 @@ The package also exposes HTTP endpoints at `/tasks/`:
 - `GET /tasks/status/<task_id>/` - Get task status
 - `POST /tasks/purge/` - Purge completed tasks
 
+They run and delete tasks, so they answer `403` until the backend says how to
+authenticate them. This project points `BACKEND` at
+`demo_app.backends.TokenAuthRedisTaskBackend`, which accepts a shared secret:
+
+```bash
+curl -X POST http://localhost:8000/tasks/run/ \
+  -H "X-Task-Token: demo-token" \
+  -d "max_tasks=5"
+```
+
+Without the header the same call returns `403`. See `demo_app/backends.py`;
+a real deployment would verify a signature over the request body instead of
+comparing a static token.
+
 ## Management Commands
 
 ### run_redis_tasks
