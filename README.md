@@ -289,6 +289,11 @@ count = executor.get_pending_task_count()
 deleted = executor.purge_completed_tasks(days=7)
 ```
 
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for how to set up a development environment and what a pull request needs.
+
 ## License
 
 MIT License
