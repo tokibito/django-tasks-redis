@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 ### Fixed
 
@@ -14,7 +14,8 @@
   idle wait. Tasks still ran. The socket timeout is now passed as `None`
   unless configured, and a configured value at or below `REDIS_BLOCK_TIMEOUT`
   is reported with a warning when the backend starts.
-  ([#27](https://github.com/tokibito/django-tasks-redis/issues/27))
+  ([#27](https://github.com/tokibito/django-tasks-redis/issues/27),
+  [#29](https://github.com/tokibito/django-tasks-redis/pull/29))
 
 ## 0.2.0
 
