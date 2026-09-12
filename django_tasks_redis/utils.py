@@ -8,8 +8,30 @@ from datetime import datetime
 from typing import Any
 
 import redis
+from django.conf import settings
+from django.utils import timezone
 
 logger = logging.getLogger("django_tasks_redis")
+
+# Without any of these, a half-open connection - a Redis restart, a network
+# partition - blocks a worker for as long as the kernel allows. REDIS_SOCKET_TIMEOUT
+# stays unset: it covers blocking reads too, so anything below REDIS_BLOCK_TIMEOUT
+# makes every fetch raise.
+CONNECTION_OPTIONS = {
+    "REDIS_SOCKET_TIMEOUT": ("socket_timeout", None),
+    "REDIS_SOCKET_CONNECT_TIMEOUT": ("socket_connect_timeout", 5),
+    "REDIS_SOCKET_KEEPALIVE": ("socket_keepalive", None),
+    "REDIS_HEALTH_CHECK_INTERVAL": ("health_check_interval", 30),
+}
+
+
+def get_connection_options(options: dict) -> dict:
+    resolved = {}
+    for option, (kwarg, default) in CONNECTION_OPTIONS.items():
+        value = options.get(option, default)
+        if value is not None:
+            resolved[kwarg] = value
+    return resolved
 
 
 def get_redis_client(options: dict) -> redis.Redis:
@@ -24,8 +46,9 @@ def get_redis_client(options: dict) -> redis.Redis:
     Returns:
         redis.Redis: Configured Redis client instance.
     """
+    connection_kwargs = get_connection_options(options)
+
     # Add ssl_ca_certs only when REDIS_SSL_CA_CERTS is specified (self-signed CA).
-    connection_kwargs = {}
     ssl_ca_certs = options.get("REDIS_SSL_CA_CERTS")
     if ssl_ca_certs:
         connection_kwargs["ssl_ca_certs"] = ssl_ca_certs
@@ -82,6 +105,11 @@ def deserialize_datetime(value: str) -> datetime | None:
     """
     Deserialize an ISO format string to datetime.
 
+    The result is always comparable with timezone.now(): a value written under
+    a different USE_TZ is converted rather than returned as is, so a setting
+    change or a producer and a consumer that disagree cannot raise "can't
+    compare offset-naive and offset-aware datetimes" deep in a worker.
+
     Args:
         value: ISO format string or empty string.
 
@@ -90,7 +118,15 @@ def deserialize_datetime(value: str) -> datetime | None:
     """
     if not value:
         return None
-    return datetime.fromisoformat(value)
+
+    parsed = datetime.fromisoformat(value)
+    # Read and write a naive value in the current time zone, which is what
+    # wrote it, so the instant survives the conversion either way.
+    if settings.USE_TZ and timezone.is_naive(parsed):
+        return timezone.make_aware(parsed)
+    if not settings.USE_TZ and timezone.is_aware(parsed):
+        return timezone.make_naive(parsed)
+    return parsed
 
 
 def serialize_json(value: Any) -> str:

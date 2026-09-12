@@ -142,6 +142,11 @@ TASKS = {
             # "REDIS_PASSWORD": None,
             # "REDIS_SSL": False,
             # "REDIS_SSL_CA_CERTS": "/path/to/ca.pem",  # CA cert path for TLS (self-signed CA). Requires REDIS_SSL=True (or a rediss:// URL).
+            # Connection robustness (passed to redis-py)
+            "REDIS_SOCKET_CONNECT_TIMEOUT": 5,  # Seconds to wait for a connection
+            "REDIS_HEALTH_CHECK_INTERVAL": 30,  # Seconds before an idle connection is pinged
+            # "REDIS_SOCKET_TIMEOUT": None,  # Seconds; must exceed REDIS_BLOCK_TIMEOUT (see below)
+            # "REDIS_SOCKET_KEEPALIVE": None,  # Enable TCP keepalive
             # Behavior settings
             "REDIS_RESULT_TTL": 2592000,  # Result retention period (seconds), default 30 days
             "REDIS_COMPLETED_TASK_TTL": 2592000,  # Retention once finished, defaults to REDIS_RESULT_TTL
@@ -153,6 +158,18 @@ TASKS = {
     },
 }
 ```
+
+### Connection robustness
+
+Without any timeout a worker blocked on a connection Redis no longer answers —
+a restart, a network partition — waits as long as the kernel allows, and looks
+idle while it does. `REDIS_SOCKET_CONNECT_TIMEOUT` bounds establishing a
+connection and `REDIS_HEALTH_CHECK_INTERVAL` makes redis-py check an idle one
+before reusing it.
+
+`REDIS_SOCKET_TIMEOUT` is left unset on purpose: it also applies to the worker's
+blocking reads, so a value below `REDIS_BLOCK_TIMEOUT` makes every fetch raise
+`TimeoutError`. Set it above that, in seconds, or leave it alone.
 
 ## Management Commands
 
