@@ -16,12 +16,12 @@ from django.tasks.signals import task_enqueued, task_finished, task_started
 from django.utils import timezone
 from django.utils.json import normalize_json
 
+from .brokers import RedisStreamsBroker
 from .exceptions import TaskAbandoned
 from .utils import (
     deserialize_datetime,
     deserialize_json,
     get_delayed_key,
-    get_priority_stream_key,
     get_redis_client,
     get_result_key,
     get_results_index_key,
@@ -57,6 +57,10 @@ class RedisTaskBackend(BaseTaskBackend):
     supports_get_result = True
     supports_priority = True
 
+    # The broker a worker consumes tasks through. A subclass can name another
+    # class here; it is built once per backend and reads its settings from it.
+    broker_class = RedisStreamsBroker
+
     def __init__(self, alias, params):
         super().__init__(alias, params)
         self._client = None
@@ -78,6 +82,8 @@ class RedisTaskBackend(BaseTaskBackend):
         # forever. Counts starts, not deliveries. 0 disables it.
         self.max_deliveries = self.options.get("REDIS_MAX_DELIVERIES", 5)
         self.scan_batch_size = self.options.get("REDIS_SCAN_BATCH_SIZE", 500)
+
+        self.broker = self.create_broker()
 
     def _check_socket_timeout(self):
         """
@@ -107,6 +113,10 @@ class RedisTaskBackend(BaseTaskBackend):
         if self._client is None:
             self._client = get_redis_client(self.options)
         return self._client
+
+    def create_broker(self):
+        """Build the broker workers consume this backend's tasks through."""
+        return self.broker_class(self, self.options)
 
     def get_auth_handler(self):
         """
@@ -167,23 +177,13 @@ class RedisTaskBackend(BaseTaskBackend):
         result_key = get_result_key(self.key_prefix, self.alias, task_id)
         results_index_key = get_results_index_key(self.key_prefix, self.alias)
 
-        # Prepare stream entry data (subset for queue)
-        stream_data = {
-            "task_id": task_id,
-            "task_path": task_data["task_path"],
-            "priority": task_data["priority"],
-            "queue_name": task.queue_name,
-            "enqueued_at": task_data["enqueued_at"],
-        }
-
         is_delayed = task.run_after is not None and task.run_after > now
         if not is_delayed:
-            priority_level = priority_to_level(task.priority)
-            stream_key = get_priority_stream_key(
-                self.key_prefix, self.alias, task.queue_name, priority_level
+            stream_key = self.broker.stream_key(
+                task.queue_name, priority_to_level(task.priority)
             )
             # Outside the transaction below: idempotent, and XADD needs it first.
-            self._ensure_consumer_group(client, stream_key)
+            self.broker.ensure_consumer_group(stream_key)
 
         # One transaction: a task stored and indexed but never queued would
         # never run, and nothing would report it.
@@ -207,7 +207,7 @@ class RedisTaskBackend(BaseTaskBackend):
             pipeline.zadd(delayed_key, {task_id: task.run_after.timestamp()})
         else:
             # Add to priority-based stream
-            pipeline.xadd(stream_key, stream_data)
+            pipeline.xadd(stream_key, self.broker.stream_entry(task_data))
 
         pipeline.execute()
 
@@ -278,15 +278,6 @@ class RedisTaskBackend(BaseTaskBackend):
             object.__setattr__(result, "_return_value", return_value)
 
         return result
-
-    def _ensure_consumer_group(self, client, stream_key):
-        """Ensure consumer group exists for the stream."""
-        try:
-            client.xgroup_create(stream_key, self.consumer_group, id="0", mkstream=True)
-        except Exception as e:
-            # Group already exists - this is fine
-            if "BUSYGROUP" not in str(e):
-                raise
 
     def run_task(self, task_id, worker_id=None):
         """
@@ -682,23 +673,7 @@ class RedisTaskBackend(BaseTaskBackend):
         )
 
         # Re-add to stream for processing
-        queue_name = task_data.get("queue_name", "default")
-        priority = int(task_data.get("priority", "0"))
-        priority_level = priority_to_level(priority)
-        stream_key = get_priority_stream_key(
-            self.key_prefix, self.alias, queue_name, priority_level
-        )
-
-        stream_data = {
-            "task_id": task_id,
-            "task_path": task_data["task_path"],
-            "priority": task_data["priority"],
-            "queue_name": queue_name,
-            "enqueued_at": task_data.get("enqueued_at", ""),
-        }
-
-        self._ensure_consumer_group(client, stream_key)
-        client.xadd(stream_key, stream_data)
+        self.broker.requeue(task_data)
 
         return True
 

@@ -4,6 +4,11 @@ Public API for executing Redis tasks.
 This module provides functions to process tasks stored in Redis
 without using management commands.
 
+The functions are thin wrappers over the backend's broker
+(``backend.broker``, a :class:`~django_tasks_redis.brokers.RedisStreamsBroker`),
+which is where reading, acknowledging and reclaiming messages live. A worker
+loop of its own can use the broker directly.
+
 Example usage:
     from django_tasks_redis import executor
 
@@ -18,311 +23,72 @@ Example usage:
 """
 
 import logging
-import socket
-import uuid
 
-import redis
 from django.tasks import task_backends
 from django.tasks.base import TaskResultStatus
 from django.utils import timezone
 
-from .utils import (
-    deserialize_datetime,
-    deserialize_json,
-    get_delayed_key,
-    get_priority_stream_key,
-    get_result_key,
-    priority_to_level,
-)
+from .utils import deserialize_datetime, generate_worker_id
 
 logger = logging.getLogger("django_tasks_redis")
 
-PRIORITY_LEVELS = ["high", "normal", "low"]
-
-PENDING_PAGE_SIZE = 100
-
-# A worker runs one task at a time, so claiming a whole backlog would park it
-# behind one consumer instead of spreading recovery over the live workers.
-MAX_CLAIMS_PER_SWEEP = 100
-
-# Every worker scans the delayed set on every fetch, and a task promoted twice
-# runs twice - one that re-enqueues itself then fans out exponentially. ZREM is
-# the claim, and the XADD shares its atomic unit, so promotion is exactly once.
-_PROMOTE_DELAYED_TASK = """
-if redis.call('ZREM', KEYS[1], ARGV[1]) == 0 then
-    return 0
-end
-if redis.call('HGET', KEYS[2], 'status') ~= ARGV[2] then
-    return 0
-end
-redis.call('XADD', KEYS[3], '*', unpack(ARGV, 3))
-return 1
-"""
+# Kept under its old name for the callers that had it.
+_generate_worker_id = generate_worker_id
 
 
-def _generate_worker_id():
-    """Generate a unique worker ID."""
-    return f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-
-
-def _is_missing_group(error):
-    """Redis reports an absent stream or consumer group as NOGROUP.
-
-    Anything else is a real error - a connection that dropped, a server that
-    stopped answering - and must not be mistaken for an empty queue.
-    """
-    return "NOGROUP" in str(error)
-
-
-def _next_message_id(message_id):
-    """The smallest stream id strictly greater than `message_id`."""
-    timestamp, _, sequence = message_id.partition("-")
-    return f"{timestamp}-{int(sequence) + 1}"
-
-
-def _get_queue_names(backend, queue_name=None):
-    if queue_name:
-        return [queue_name]
-    return list(backend.queues) if backend.queues else ["default"]
-
-
-def _ack_and_delete(client, backend, stream_key, message_id):
-    """
-    Acknowledge a message and reclaim the stream entry behind it.
-
-    XACK only clears the pending entry; the message itself stays in the stream.
-    Without the XDEL every priority stream grows by one entry per task, forever.
-    """
-    client.xack(stream_key, backend.consumer_group, message_id)
-    client.xdel(stream_key, message_id)
+def _wait_seconds(block):
+    """Translate the millisecond `block` argument into the broker's seconds."""
+    if not block or block <= 0:
+        return 0
+    return block / 1000
 
 
 def fetch_task(queue_name=None, backend_name="default", worker_id=None, block=None):
     """
     Fetch and lock a single pending task from Redis Stream.
 
-    This function uses XREADGROUP to safely fetch a task
-    without conflicts in multi-worker environments.
-
-    Messages this consumer already owns are served first: claim_stale_tasks
-    reassigns the pending messages of a dead worker to a live consumer, and this
-    is where they get delivered again. New messages are only read after that.
+    Receives one message through the backend's broker and returns the task
+    hash behind it. The message stays pending for `worker_id` until it is
+    acknowledged, which this function does not do: prefer
+    :func:`process_one_task`, or ``backend.broker.receive()`` for a loop that
+    acknowledges messages itself.
 
     Args:
         queue_name: Optional queue name to filter tasks.
         backend_name: Backend name (default: "default").
         worker_id: Optional worker ID. If not provided, one will be generated.
         block: Milliseconds to wait for a new message when every stream is
-            empty, instead of returning None immediately. A blocking read waits
-            on all streams at once, so a message that arrives on a lower
-            priority stream at the same moment as one on a higher priority
-            stream may be served first; strict priority still holds for
-            messages already queued.
+            empty, instead of returning None immediately.
 
     Returns:
-        Task data dict if a task is available, None otherwise.
+        Task data dict if a task is available, None otherwise. The dict also
+        carries the message handle as ``_stream_key`` and ``_message_id``,
+        as it did before the broker existed.
     """
     if worker_id is None:
-        worker_id = _generate_worker_id()
+        worker_id = generate_worker_id()
 
     backend = task_backends[backend_name]
-    client = backend.get_client()
+    broker = backend.broker
 
-    # First, move delayed tasks to streams if their time has come
-    _process_delayed_tasks(backend, queue_name)
-
-    queue_names = _get_queue_names(backend, queue_name)
-    stream_keys = [
-        get_priority_stream_key(backend.key_prefix, backend_name, qname, priority_level)
-        # Try each priority level: high, normal, low
-        for priority_level in PRIORITY_LEVELS
-        for qname in queue_names
-    ]
-
-    # Messages this consumer already owns, every stream in one round trip:
-    # reading history delivers nothing new, so asking them all at once is free.
-    task_data = _read_streams(client, backend, stream_keys, worker_id, "0")
-    if task_data is not None:
-        return task_data
-
-    # New messages, one stream at a time: reading them all at once would hold
-    # lower priority messages this worker is not going to run yet.
-    for stream_key in stream_keys:
-        task_data = _read_one_task(client, backend, stream_key, worker_id, ">")
-        if task_data is not None:
-            return task_data
-
-    if block:
-        return _read_streams(client, backend, stream_keys, worker_id, ">", block=block)
-
-    return None
-
-
-def _read_one_task(client, backend, stream_key, worker_id, read_id):
-    """Read a single message from one stream and resolve the task behind it."""
-    try:
-        result = client.xreadgroup(
-            backend.consumer_group,
-            worker_id,
-            {stream_key: read_id},
-            count=1,
-            block=None,  # Non-blocking (block=0 means block indefinitely)
-        )
-    except redis.ResponseError as error:
-        # Stream or group doesn't exist yet
-        if not _is_missing_group(error):
-            raise
-        return None
-
-    if not result:
-        return None
-
-    # result is [(stream_key, [(message_id, data)])]
-    _stream_name, messages = result[0]
+    messages = broker.receive(
+        queue_name=queue_name,
+        max_messages=1,
+        wait_seconds=_wait_seconds(block),
+        worker_id=worker_id,
+    )
     if not messages:
         return None
 
-    message_id, data = messages[0]
-    return _resolve_message(client, backend, stream_key, message_id, data)
-
-
-def _read_streams(client, backend, stream_keys, worker_id, read_id, block=None):
-    """
-    Read one message from every stream at once, optionally waiting for one.
-
-    Returns the first task that has to run, taking the streams in the priority
-    order they were given rather than the order Redis replied in. Anything
-    delivered for the other streams stays pending for this consumer and is
-    served by the next fetch.
-    """
-    streams = dict.fromkeys(stream_keys, read_id)
-
-    try:
-        result = client.xreadgroup(
-            backend.consumer_group, worker_id, streams, count=1, block=block
-        )
-    except redis.ResponseError as error:
-        # A stream nothing has ever been written to has no consumer group, and
-        # that fails the whole read. Create the missing ones and read again.
-        if not _is_missing_group(error):
-            raise
-        for stream_key in stream_keys:
-            backend._ensure_consumer_group(client, stream_key)
-        result = client.xreadgroup(
-            backend.consumer_group, worker_id, streams, count=1, block=block
-        )
-
-    delivered = {name: messages for name, messages in result or [] if messages}
-    for stream_key in stream_keys:
-        messages = delivered.get(stream_key)
-        if not messages:
-            continue
-        message_id, data = messages[0]
-        task_data = _resolve_message(client, backend, stream_key, message_id, data)
-        if task_data is not None:
-            return task_data
-
-    return None
-
-
-def _resolve_message(client, backend, stream_key, message_id, data):
-    """
-    Turn a delivered stream message into runnable task data.
-
-    Returns None when the message does not need to run, acknowledging it first
-    so it is neither delivered nor kept around again.
-    """
-    if not data:
-        # The entry is gone from the stream and only the pending record is left.
-        client.xack(stream_key, backend.consumer_group, message_id)
+    message = messages[0]
+    task_data = backend.get_task_data(message.task_id)
+    if task_data is None:
+        # Gone between the read and here: nothing left to run.
+        broker.ack(message)
         return None
 
-    task_id = data.get("task_id")
-
-    # Get full task data from hash
-    result_key = get_result_key(backend.key_prefix, backend.alias, task_id)
-    task_data = client.hgetall(result_key)
-
-    if not task_data:
-        # Task data not found, acknowledge message
-        _ack_and_delete(client, backend, stream_key, message_id)
-        return None
-
-    # Only READY runs. RUNNING means another worker owns the task; if that
-    # worker is in fact dead, claim_stale_tasks is what notices and hands the
-    # task back as READY, because staleness is the only way to tell them apart.
-    if task_data.get("status") != TaskResultStatus.READY:
-        # Task already processed, acknowledge and skip
-        _ack_and_delete(client, backend, stream_key, message_id)
-        return None
-
-    # Check run_after constraint
-    run_after = deserialize_datetime(task_data.get("run_after", ""))
-    if run_after and run_after > timezone.now():
-        # Back to the delayed set, not acknowledged away: an acknowledged
-        # message is never delivered again, so dropping it loses the task.
-        delayed_key = get_delayed_key(
-            backend.key_prefix, backend.alias, task_data.get("queue_name", "default")
-        )
-        client.zadd(delayed_key, {task_id: run_after.timestamp()})
-        _ack_and_delete(client, backend, stream_key, message_id)
-        return None
-
-    # Store message_id for acknowledgment
-    task_data["_stream_key"] = stream_key
-    task_data["_message_id"] = message_id
+    task_data["_stream_key"], task_data["_message_id"] = message.handle
     return task_data
-
-
-def _process_delayed_tasks(backend, queue_name=None):
-    """Move delayed tasks to streams if their time has come."""
-    client = backend.get_client()
-    now_timestamp = timezone.now().timestamp()
-    promote = client.register_script(_PROMOTE_DELAYED_TASK)
-
-    for qname in _get_queue_names(backend, queue_name):
-        delayed_key = get_delayed_key(backend.key_prefix, backend.alias, qname)
-
-        # Get tasks ready to be executed
-        ready_tasks = client.zrangebyscore(delayed_key, 0, now_timestamp)
-
-        for task_id in ready_tasks:
-            # Get task data
-            result_key = get_result_key(backend.key_prefix, backend.alias, task_id)
-            task_data = client.hgetall(result_key)
-
-            if not task_data:
-                # The result hash expired or was deleted: nothing left to run.
-                client.zrem(delayed_key, task_id)
-                continue
-
-            # Add to stream
-            priority = int(task_data.get("priority", "0"))
-            priority_level = priority_to_level(priority)
-            stream_key = get_priority_stream_key(
-                backend.key_prefix, backend.alias, qname, priority_level
-            )
-
-            backend._ensure_consumer_group(client, stream_key)
-            # The script re-checks the status, so a task that is no longer READY
-            # leaves the delayed set without being promoted.
-            promote(
-                keys=[delayed_key, result_key, stream_key],
-                args=[
-                    task_id,
-                    TaskResultStatus.READY,
-                    "task_id",
-                    task_id,
-                    "task_path",
-                    task_data["task_path"],
-                    "priority",
-                    task_data["priority"],
-                    "queue_name",
-                    qname,
-                    "enqueued_at",
-                    task_data.get("enqueued_at", ""),
-                ],
-            )
 
 
 def process_one_task(
@@ -349,33 +115,27 @@ def process_one_task(
         ...     print("No tasks available")
     """
     if worker_id is None:
-        worker_id = _generate_worker_id()
-
-    task_data = fetch_task(
-        queue_name=queue_name,
-        backend_name=backend_name,
-        worker_id=worker_id,
-        block=block,
-    )
-
-    if task_data is None:
-        return None
+        worker_id = generate_worker_id()
 
     backend = task_backends[backend_name]
-    client = backend.get_client()
+    broker = backend.broker
 
-    # Extract stream info for acknowledgment
-    stream_key = task_data.pop("_stream_key", None)
-    message_id = task_data.pop("_message_id", None)
+    messages = broker.receive(
+        queue_name=queue_name,
+        max_messages=1,
+        wait_seconds=_wait_seconds(block),
+        worker_id=worker_id,
+    )
+    if not messages:
+        return None
 
-    # An exception leaves the message pending on purpose: claim_stale_tasks hands
-    # it out again, bounded by REDIS_MAX_DELIVERIES.
-    result = backend.run_task(task_data["task_id"], worker_id=worker_id)
+    message = messages[0]
 
-    # Acknowledge message after successful processing
-    if stream_key and message_id:
-        _ack_and_delete(client, backend, stream_key, message_id)
+    # An exception leaves the message pending on purpose: claim_stale_tasks
+    # hands it out again, bounded by REDIS_MAX_DELIVERIES.
+    result = backend.run_task(message.task_id, worker_id=worker_id)
 
+    broker.ack(message)
     return result
 
 
@@ -405,7 +165,7 @@ def process_tasks(
         ...     print(f"  {result.id}: {result.status}")
     """
     if worker_id is None:
-        worker_id = _generate_worker_id()
+        worker_id = generate_worker_id()
 
     results = []
     tasks_processed = 0
@@ -490,7 +250,7 @@ def run_task_by_id(task_id, backend_name="default", worker_id=None, allow_retry=
         >>> result = executor.run_task_by_id("...", allow_retry=True)
     """
     if worker_id is None:
-        worker_id = _generate_worker_id()
+        worker_id = generate_worker_id()
 
     backend = task_backends[backend_name]
     task_data = backend.get_task_data(str(task_id))
@@ -518,25 +278,19 @@ def claim_stale_tasks(
     """
     Claim stale tasks from pending entries.
 
-    Uses XPENDING and XCLAIM to reclaim tasks that have been
-    pending for longer than the claim timeout.
-
-    Messages are claimed for `worker_id`, which must be the consumer id a worker
-    actually fetches with: fetch_task serves a consumer's own pending messages
-    first, and that is what makes a reclaimed task run again. Claiming for a
-    consumer nobody reads leaves the task stranded.
-
-    A task left RUNNING by the consumer that died is handed back as READY.
-    Staleness is the only thing that tells a dead worker apart from a slow one,
-    so this is the only place that decision can be made.
+    Wraps ``backend.broker.claim_stale_messages()``: messages other consumers
+    have held for longer than the claim timeout are reassigned to `worker_id`,
+    and a task their dead consumer left RUNNING is handed back as READY.
 
     Args:
         backend_name: Backend name (default: "default").
         claim_timeout: Timeout in seconds. If None, uses backend setting. It
             must be longer than the longest task the workers run, otherwise a
             task that is still running is reclaimed and executed twice.
-        worker_id: Consumer id to claim the messages for. If None, one is
-            generated, which only makes sense when nothing will consume them.
+        worker_id: Consumer id to claim the messages for. It must be the id a
+            worker actually receives with, or the task is stranded. If None,
+            one is generated, which only makes sense when nothing will consume
+            them.
         max_deliveries: Give up on a task that was started this many times
             without finishing, and mark it FAILED. If None, uses the backend
             setting; 0 disables the cap.
@@ -544,162 +298,18 @@ def claim_stale_tasks(
     Returns:
         Number of tasks claimed.
     """
-    backend = task_backends[backend_name]
-
-    if claim_timeout is None:
-        claim_timeout = backend.claim_timeout
-    if max_deliveries is None:
-        max_deliveries = backend.max_deliveries
     if worker_id is None:
-        worker_id = _generate_worker_id()
+        worker_id = generate_worker_id()
 
-    claim_timeout_ms = int(claim_timeout * 1000)
-    claimed_count = 0
-
-    # Get queue names
-    queue_names = list(backend.queues) if backend.queues else ["default"]
-
-    for queue_name in queue_names:
-        for priority_level in PRIORITY_LEVELS:
-            stream_key = get_priority_stream_key(
-                backend.key_prefix, backend_name, queue_name, priority_level
-            )
-            claimed_count += _claim_stale_in_stream(
-                backend,
-                stream_key,
-                worker_id,
-                claim_timeout_ms,
-                max_deliveries,
-                limit=MAX_CLAIMS_PER_SWEEP - claimed_count,
-            )
-            if claimed_count >= MAX_CLAIMS_PER_SWEEP:
-                logger.info(
-                    "Consumer %s claimed %s stale tasks, stopping this sweep",
-                    worker_id,
-                    claimed_count,
-                )
-                return claimed_count
-
-    return claimed_count
-
-
-def _claim_stale_in_stream(
-    backend, stream_key, worker_id, claim_timeout_ms, max_deliveries, limit
-):
-    client = backend.get_client()
-
-    try:
-        # Get pending entries
-        pending = client.xpending(stream_key, backend.consumer_group)
-    except redis.ResponseError as error:
-        # Stream or group doesn't exist
-        if not _is_missing_group(error):
-            raise
-        return 0
-
-    if not pending or not pending["pending"]:
-        return 0
-
-    claimed_count = 0
-    # Reading only the first page would cap recovery at that many messages.
-    start = "-"
-    while claimed_count < limit:
-        # Get detailed pending info
-        pending_range = client.xpending_range(
-            stream_key,
-            backend.consumer_group,
-            start,
-            "+",
-            count=PENDING_PAGE_SIZE,
-        )
-        if not pending_range:
-            break
-
-        for entry in pending_range:
-            # entry: {'message_id': ..., 'consumer': ..., 'time_since_delivered': ..., 'times_delivered': ...}
-            if entry["time_since_delivered"] < claim_timeout_ms:
-                continue
-
-            # min-idle-time is what makes concurrent sweeps safe: the first
-            # XCLAIM resets the idle clock, so the others no longer match.
-            claimed = client.xclaim(
-                stream_key,
-                backend.consumer_group,
-                worker_id,
-                claim_timeout_ms,
-                [entry["message_id"]],
-            )
-            if not claimed:
-                continue
-
-            message_id, data = claimed[0]
-            # Redis counts every delivery, including the history reads
-            # fetch_task does for a consumer's other streams, so the counter
-            # alone would abandon a task that never ran. It only decides when
-            # to look at the hash, where the real number of starts is kept.
-            if (
-                max_deliveries
-                and entry["times_delivered"] >= max_deliveries
-                and _abandon_message(
-                    client, backend, stream_key, message_id, data, max_deliveries
-                )
-            ):
-                continue
-
-            claimed_count += 1
-            _release_interrupted_task(backend, data)
-            if claimed_count >= limit:
-                break
-
-        if len(pending_range) < PENDING_PAGE_SIZE:
-            break
-        start = _next_message_id(pending_range[-1]["message_id"])
-
-    return claimed_count
-
-
-def _release_interrupted_task(backend, data):
-    """Hand a task its dead consumer left RUNNING back to the queue."""
-    task_id = (data or {}).get("task_id")
-    if not task_id:
-        return
-
-    if backend.transition_task_status(
-        task_id, TaskResultStatus.READY, [TaskResultStatus.RUNNING]
-    ):
-        logger.warning("Task %s was interrupted mid-run and is queued again", task_id)
-
-
-def _abandon_message(client, backend, stream_key, message_id, data, max_deliveries):
-    """
-    Give up on a message whose task was started `max_deliveries` times.
-
-    The task is recorded as failed and the message is acknowledged, so it is
-    never handed out again. Returns False, leaving the message to run, when
-    the task has been started fewer times than that: a delivery that did not
-    lead to a start is not an attempt.
-    """
-    task_id = (data or {}).get("task_id")
-    if not task_id:
-        # The entry is gone from the stream and only the pending record is left.
-        client.xack(stream_key, backend.consumer_group, message_id)
-        return True
-
-    result_key = get_result_key(backend.key_prefix, backend.alias, task_id)
-    attempts = len(
-        deserialize_json(client.hget(result_key, "worker_ids_json") or "[]") or []
+    backend = task_backends[backend_name]
+    return backend.broker.claim_stale_messages(
+        worker_id, claim_timeout=claim_timeout, max_deliveries=max_deliveries
     )
-    if attempts < max_deliveries:
-        return False
 
-    # False means the task is finished or gone; either way the message has
-    # nothing left to run and must not stay pending.
-    backend.mark_task_failed(
-        task_id,
-        f"Abandoned after {attempts} attempts without a successful run.",
-    )
-    _ack_and_delete(client, backend, stream_key, message_id)
-    return True
+
+def _process_delayed_tasks(backend, queue_name=None):
+    """Move delayed tasks to streams if their time has come."""
+    backend.broker.promote_delayed_tasks(queue_name)
 
 
 def purge_completed_tasks(
@@ -879,17 +489,9 @@ def get_queue_stats(backend_name="default", queue_name=None):
 
     counts = backend.get_status_counts(queue_name=queue_name)
 
-    # Get delayed count
-    queue_names = (
-        [queue_name]
-        if queue_name
-        else (list(backend.queues) if backend.queues else ["default"])
-    )
-
     delayed_count = 0
-    for qname in queue_names:
-        delayed_key = get_delayed_key(backend.key_prefix, backend_name, qname)
-        delayed_count += client.zcard(delayed_key)
+    for qname in backend.broker.queue_names(queue_name):
+        delayed_count += client.zcard(backend.broker.delayed_key(qname))
 
     return {
         "pending_count": counts.get(TaskResultStatus.READY, 0),

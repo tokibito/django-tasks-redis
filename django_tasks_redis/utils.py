@@ -4,6 +4,8 @@ Utility functions for Redis connection and data handling.
 
 import json
 import logging
+import socket
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -29,6 +31,16 @@ CONNECTION_OPTIONS = {
 # the same length as the worker's default XREADGROUP block: the read is cut off
 # the moment the block would have returned, and every idle wait raises.
 UNBOUNDED_WHEN_NONE = frozenset({"REDIS_SOCKET_TIMEOUT"})
+
+
+def generate_worker_id() -> str:
+    """
+    Generate a unique worker id.
+
+    It doubles as the consumer name in the stream's consumer group, so the
+    host name is in it for an operator reading XINFO CONSUMERS.
+    """
+    return f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 
 
 def get_connection_options(options: dict) -> dict:

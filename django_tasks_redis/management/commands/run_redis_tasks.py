@@ -1,5 +1,9 @@
 """
 Management command to run Redis task worker.
+
+The worker receives from the backend's broker, runs the task each message
+names, and acknowledges the message. It is the same loop `run_database_tasks`
+runs against a pull broker in django-database-task.
 """
 
 import logging
@@ -8,9 +12,10 @@ import time
 
 from django.core.management.base import BaseCommand
 from django.tasks import task_backends
+from django.tasks.base import TaskResultStatus
 from django.utils.translation import gettext_lazy as _
 
-from django_tasks_redis import executor
+from django_tasks_redis.utils import generate_worker_id
 
 logger = logging.getLogger("django_tasks_redis")
 
@@ -72,12 +77,13 @@ class Command(BaseCommand):
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-        worker_id = executor._generate_worker_id()
+        backend = task_backends[backend_name]
+        broker = backend.broker
+        worker_id = generate_worker_id()
 
         # Waiting removes up to `interval` of latency per task. Only continuous
         # workers wait; a one-shot run exits as soon as the queue is empty.
-        block_timeout = getattr(task_backends[backend_name], "block_timeout", None)
-        block = block_timeout if continuous else None
+        wait_seconds = (backend.block_timeout or 0) / 1000 if continuous else 0
 
         self.stdout.write(
             self.style.SUCCESS(f"Starting Redis task worker: {worker_id}")
@@ -87,6 +93,37 @@ class Command(BaseCommand):
         self.stdout.write(f"  Backend: {backend_name}")
         self.stdout.write(f"  Continuous: {continuous}")
 
+        try:
+            tasks_processed = self._process_tasks(
+                backend=backend,
+                broker=broker,
+                queue_name=queue_name,
+                worker_id=worker_id,
+                continuous=continuous,
+                interval=interval,
+                wait_seconds=wait_seconds,
+                max_tasks=max_tasks,
+                claim_interval=claim_interval,
+            )
+        finally:
+            broker.close()
+
+        self.stdout.write(
+            self.style.SUCCESS(f"Worker stopped. Processed {tasks_processed} task(s).")
+        )
+
+    def _process_tasks(
+        self,
+        backend,
+        broker,
+        queue_name,
+        worker_id,
+        continuous,
+        interval,
+        wait_seconds,
+        max_tasks,
+        claim_interval,
+    ):
         tasks_processed = 0
         last_claim_time = time.time()
 
@@ -95,65 +132,92 @@ class Command(BaseCommand):
             current_time = time.time()
             if current_time - last_claim_time >= claim_interval:
                 last_claim_time = current_time
-                self._claim_stale_tasks(backend_name, worker_id)
+                self._claim_stale_messages(broker, worker_id)
 
-            # A task that cannot even be started must not take the worker down
-            # with it: its message stays pending and is handed out again.
             try:
-                result = executor.process_one_task(
+                messages = broker.receive(
                     queue_name=queue_name,
-                    backend_name=backend_name,
+                    max_messages=1,
+                    wait_seconds=wait_seconds,
                     worker_id=worker_id,
-                    block=block,
                 )
             except Exception:
-                logger.exception("Worker %s failed to process a task", worker_id)
+                logger.exception("Worker %s failed to receive a task", worker_id)
                 self.stderr.write(
-                    self.style.ERROR("Failed to process a task, see the logs")
+                    self.style.ERROR("Failed to receive a task, see the logs")
                 )
                 if not continuous:
                     break
                 time.sleep(interval)
                 continue
 
-            if result is not None:
-                tasks_processed += 1
-                status_style = (
-                    self.style.SUCCESS
-                    if result.status == "SUCCESSFUL"
-                    else self.style.ERROR
-                )
-                self.stdout.write(
-                    f"Processed task {result.id[:8]}: {status_style(result.status)}"
-                )
+            if not messages:
+                if not continuous:
+                    self.stdout.write("No tasks available, exiting")
+                    break
 
-                # Check max_tasks limit
+                # Wait before polling again, unless the receive already waited.
+                if not wait_seconds:
+                    time.sleep(interval)
+                continue
+
+            for message in messages:
+                # A task that cannot even be started must not take the worker
+                # down with it: its message stays pending and is handed out
+                # again.
+                try:
+                    self._run_broker_message(backend, broker, message, worker_id)
+                except Exception:
+                    logger.exception("Worker %s failed to process a task", worker_id)
+                    self.stderr.write(
+                        self.style.ERROR("Failed to process a task, see the logs")
+                    )
+                    if not continuous:
+                        return tasks_processed
+                    time.sleep(interval)
+                    continue
+
+                tasks_processed += 1
                 if max_tasks > 0 and tasks_processed >= max_tasks:
                     self.stdout.write(
                         self.style.WARNING(
                             f"Reached max tasks limit ({max_tasks}), stopping"
                         )
                     )
-                    break
-            else:
-                if not continuous:
-                    self.stdout.write("No tasks available, exiting")
-                    break
+                    return tasks_processed
 
-                # Wait before polling again, unless the fetch already waited.
-                if not block:
-                    time.sleep(interval)
+        return tasks_processed
 
-        self.stdout.write(
-            self.style.SUCCESS(f"Worker stopped. Processed {tasks_processed} task(s).")
+    def _run_broker_message(self, backend, broker, message, worker_id):
+        """
+        Run the task a broker message names, then acknowledge the message.
+
+        An exception from the run leaves the message with the broker: for a
+        stream that means it stays pending for this consumer, to be served
+        again or reclaimed by another worker.
+        """
+        try:
+            result = backend.run_task(message.task_id, worker_id=worker_id)
+        except Exception:
+            broker.nack(message)
+            raise
+
+        broker.ack(message)
+
+        status_style = (
+            self.style.SUCCESS
+            if result.status == TaskResultStatus.SUCCESSFUL
+            else self.style.ERROR
         )
+        self.stdout.write(
+            f"Processed task {result.id[:8]}: {status_style(result.status)}"
+        )
+        return result
 
-    def _claim_stale_tasks(self, backend_name, worker_id):
+    def _claim_stale_messages(self, broker, worker_id):
         """Take over the messages of workers that died, for this consumer."""
         try:
-            claimed = executor.claim_stale_tasks(
-                backend_name=backend_name, worker_id=worker_id
-            )
+            claimed = broker.claim_stale_messages(worker_id)
         except Exception:
             logger.exception("Worker %s failed to claim stale tasks", worker_id)
             return
