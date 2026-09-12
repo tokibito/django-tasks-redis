@@ -28,15 +28,29 @@ def normal_stream_key(backend, queue_name="default"):
     )
 
 
-def deliver_to(backend, worker_id, queue_name="default"):
-    """Hand the next message to a consumer without acknowledging it."""
+def deliver_to(
+    backend, worker_id, queue_name="default", count=1, priority_level="normal"
+):
+    """Hand the next messages to a consumer without acknowledging them."""
     client = backend.get_client()
+    stream_key = get_priority_stream_key(
+        backend.key_prefix, backend.alias, queue_name, priority_level
+    )
     return client.xreadgroup(
         backend.consumer_group,
         worker_id,
-        {normal_stream_key(backend, queue_name): ">"},
-        count=1,
+        {stream_key: ">"},
+        count=count,
         block=None,
+    )
+
+
+def pending_entries(backend, priority_level="normal", queue_name="default"):
+    stream_key = get_priority_stream_key(
+        backend.key_prefix, backend.alias, queue_name, priority_level
+    )
+    return backend.get_client().xpending_range(
+        stream_key, backend.consumer_group, "-", "+", count=100
     )
 
 
@@ -300,7 +314,7 @@ class TestStaleTaskRecovery:
 
         assert claimed == 0
 
-    def test_message_is_abandoned_after_too_many_deliveries(
+    def test_message_is_abandoned_after_too_many_attempts(
         self, redis_backend, clean_redis
     ):
         """A task that never completes is failed instead of retried forever."""
@@ -310,6 +324,15 @@ class TestStaleTaskRecovery:
         stream_key = normal_stream_key(redis_backend)
         result = simple_task.enqueue(1, 2)
         deliver_to(redis_backend, DEAD_WORKER)
+        # The dead worker had started the task once.
+        set_task_fields(
+            redis_backend,
+            result.id,
+            mapping={
+                "status": TaskResultStatus.RUNNING,
+                "worker_ids_json": json.dumps([DEAD_WORKER]),
+            },
+        )
 
         claimed = executor.claim_stale_tasks(
             claim_timeout=0, worker_id=LIVE_WORKER, max_deliveries=1
@@ -328,6 +351,70 @@ class TestStaleTaskRecovery:
         assert redis_backend.get_result(result.id).errors[-1].exception_class is (
             TaskAbandoned
         )
+
+    def test_history_reads_do_not_abandon_a_task_that_never_ran(
+        self, redis_backend, clean_redis
+    ):
+        """Only a start counts as an attempt, not a delivery.
+
+        fetch_task re-reads a consumer's own pending messages across all
+        streams, and Redis bumps the delivery counter of every message it
+        returns. While a worker works through one stream, the head of every
+        other stream it holds is delivered again on each fetch, so the counter
+        alone would give up on a task nobody ever started.
+        """
+        from tests.tasks import simple_task
+
+        for number in range(1, 5):
+            simple_task.enqueue(number, number)
+        victim = simple_task.using(priority=-50).enqueue(9, 9)
+
+        # A worker takes everything and dies.
+        deliver_to(redis_backend, DEAD_WORKER, count=4)
+        deliver_to(redis_backend, DEAD_WORKER, priority_level="low")
+        assert executor.claim_stale_tasks(claim_timeout=0, worker_id=LIVE_WORKER) == 5
+
+        # Every fetch delivers the low priority message again without running it.
+        for _ in range(3):
+            assert executor.process_one_task(worker_id=LIVE_WORKER).status == (
+                TaskResultStatus.SUCCESSFUL
+            )
+        low_entry = pending_entries(redis_backend, "low")[0]
+        assert low_entry["times_delivered"] >= redis_backend.max_deliveries
+
+        # This worker dies too; the next sweep must hand the task on, not fail it.
+        executor.claim_stale_tasks(claim_timeout=0, worker_id="third-worker")
+
+        assert executor.get_task_by_id(victim.id)["status"] == TaskResultStatus.READY
+        # The fourth normal task runs first, then the low priority one.
+        for _ in range(2):
+            executor.process_one_task(worker_id="third-worker")
+        assert redis_backend.get_result(victim.id).return_value == 18
+
+    def test_abandoning_does_not_overwrite_a_finished_task(
+        self, redis_backend, clean_redis
+    ):
+        """A worker that finished and died before XACK keeps its result."""
+        from tests.tasks import simple_task
+
+        client = redis_backend.get_client()
+        stream_key = normal_stream_key(redis_backend)
+        result = simple_task.enqueue(1, 2)
+        deliver_to(redis_backend, DEAD_WORKER)
+        executor.run_task_by_id(result.id, worker_id=DEAD_WORKER)
+        assert executor.get_task_by_id(result.id)["status"] == (
+            TaskResultStatus.SUCCESSFUL
+        )
+
+        executor.claim_stale_tasks(
+            claim_timeout=0, worker_id=LIVE_WORKER, max_deliveries=1
+        )
+
+        task_data = executor.get_task_by_id(result.id)
+        assert task_data["status"] == TaskResultStatus.SUCCESSFUL
+        assert task_data["errors_json"] == "[]"
+        assert client.xlen(stream_key) == 0
+        assert client.xpending(stream_key, redis_backend.consumer_group)["pending"] == 0
 
 
 @pytest.mark.django_db

@@ -28,6 +28,7 @@ from django.utils import timezone
 
 from .utils import (
     deserialize_datetime,
+    deserialize_json,
     get_delayed_key,
     get_priority_stream_key,
     get_result_key,
@@ -536,9 +537,9 @@ def claim_stale_tasks(
             task that is still running is reclaimed and executed twice.
         worker_id: Consumer id to claim the messages for. If None, one is
             generated, which only makes sense when nothing will consume them.
-        max_deliveries: Give up on a message after this many delivery attempts
-            and mark its task FAILED. If None, uses the backend setting; 0
-            disables the cap.
+        max_deliveries: Give up on a task that was started this many times
+            without finishing, and mark it FAILED. If None, uses the backend
+            setting; 0 disables the cap.
 
     Returns:
         Number of tasks claimed.
@@ -619,10 +620,6 @@ def _claim_stale_in_stream(
             if entry["time_since_delivered"] < claim_timeout_ms:
                 continue
 
-            if max_deliveries and entry["times_delivered"] >= max_deliveries:
-                _abandon_message(client, backend, stream_key, entry)
-                continue
-
             # min-idle-time is what makes concurrent sweeps safe: the first
             # XCLAIM resets the idle clock, so the others no longer match.
             claimed = client.xclaim(
@@ -632,12 +629,27 @@ def _claim_stale_in_stream(
                 claim_timeout_ms,
                 [entry["message_id"]],
             )
+            if not claimed:
+                continue
 
-            if claimed:
-                claimed_count += 1
-                _release_interrupted_task(backend, claimed[0][1])
-                if claimed_count >= limit:
-                    break
+            message_id, data = claimed[0]
+            # Redis counts every delivery, including the history reads
+            # fetch_task does for a consumer's other streams, so the counter
+            # alone would abandon a task that never ran. It only decides when
+            # to look at the hash, where the real number of starts is kept.
+            if (
+                max_deliveries
+                and entry["times_delivered"] >= max_deliveries
+                and _abandon_message(
+                    client, backend, stream_key, message_id, data, max_deliveries
+                )
+            ):
+                continue
+
+            claimed_count += 1
+            _release_interrupted_task(backend, data)
+            if claimed_count >= limit:
+                break
 
         if len(pending_range) < PENDING_PAGE_SIZE:
             break
@@ -658,20 +670,36 @@ def _release_interrupted_task(backend, data):
         logger.warning("Task %s was interrupted mid-run and is queued again", task_id)
 
 
-def _abandon_message(client, backend, stream_key, entry):
-    """Stop redelivering a message and record its task as failed."""
-    message_id = entry["message_id"]
+def _abandon_message(client, backend, stream_key, message_id, data, max_deliveries):
+    """
+    Give up on a message whose task was started `max_deliveries` times.
 
-    messages = client.xrange(stream_key, message_id, message_id)
-    task_id = messages[0][1].get("task_id") if messages else None
-    if task_id:
-        backend.mark_task_failed(
-            task_id,
-            f"Abandoned after {entry['times_delivered']} delivery attempts "
-            f"without a successful run.",
-        )
+    The task is recorded as failed and the message is acknowledged, so it is
+    never handed out again. Returns False, leaving the message to run, when
+    the task has been started fewer times than that: a delivery that did not
+    lead to a start is not an attempt.
+    """
+    task_id = (data or {}).get("task_id")
+    if not task_id:
+        # The entry is gone from the stream and only the pending record is left.
+        client.xack(stream_key, backend.consumer_group, message_id)
+        return True
 
+    result_key = get_result_key(backend.key_prefix, backend.alias, task_id)
+    attempts = len(
+        deserialize_json(client.hget(result_key, "worker_ids_json") or "[]") or []
+    )
+    if attempts < max_deliveries:
+        return False
+
+    # False means the task is finished or gone; either way the message has
+    # nothing left to run and must not stay pending.
+    backend.mark_task_failed(
+        task_id,
+        f"Abandoned after {attempts} attempts without a successful run.",
+    )
     _ack_and_delete(client, backend, stream_key, message_id)
+    return True
 
 
 def purge_completed_tasks(
