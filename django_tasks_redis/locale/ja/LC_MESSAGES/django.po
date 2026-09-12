@@ -121,8 +121,8 @@ msgid "Status to delete (can be specified multiple times, default: SUCCESSFUL,FA
 msgstr "削除対象のステータス (複数指定可、デフォルト: SUCCESSFUL,FAILED)"
 
 #: management/commands/purge_completed_redis_tasks.py
-msgid "Batch size for deletion (default: 1000)"
-msgstr "削除のバッチサイズ (デフォルト: 1000)"
+msgid "Tasks read per round trip (default: REDIS_SCAN_BATCH_SIZE)"
+msgstr "1回の往復で読み取るタスク数 (デフォルト: REDIS_SCAN_BATCH_SIZE)"
 
 #: management/commands/purge_completed_redis_tasks.py
 msgid "Only show count, don't actually delete"

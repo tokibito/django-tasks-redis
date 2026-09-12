@@ -31,8 +31,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--batch-size",
             type=int,
-            default=1000,
-            help=_("Batch size for deletion (default: 1000)"),
+            default=None,
+            help=_("Tasks read per round trip (default: REDIS_SCAN_BATCH_SIZE)"),
         )
         parser.add_argument(
             "--dry-run",
