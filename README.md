@@ -30,12 +30,18 @@ sequenceDiagram
     Note over App,Worker: Task Enqueue
     App->>Backend: task.enqueue(args, kwargs)
     Backend->>Backend: Validate & serialize args
+    Note over Backend,Redis: One transaction
     Backend->>Redis: HSET task data (status=READY)
-    Backend->>Redis: XADD to priority stream
-    Redis-->>Backend: Message ID
+    Backend->>Redis: SADD to results index
+    alt run_after in the future
+        Backend->>Redis: ZADD to delayed set
+    else Ready to run
+        Backend->>Redis: XADD to priority stream
+    end
     Backend-->>App: TaskResult (id, status=READY)
 
     Note over App,Worker: Task Execution
+    Worker->>Redis: Promote due delayed tasks<br/>(ZREM + XADD in one script)
     Worker->>Redis: XREADGROUP (consumer group)<br/>(own pending messages, then new ones)
     Redis-->>Worker: Message with task_id
     Worker->>Redis: HGET task data
@@ -47,7 +53,7 @@ sequenceDiagram
     else Failure
         Worker->>Redis: HSET status=FAILED,<br/>errors, finished_at
     end
-    Worker->>Redis: XACK + XDEL (acknowledge and reclaim)
+    Worker->>Redis: XACK + XDEL (acknowledge and delete the entry)
 
     Note over App,Worker: Crash Recovery
     Worker->>Redis: XPENDING + XCLAIM stale messages<br/>(claim_timeout exceeded)
