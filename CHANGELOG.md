@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`backend.broker`, a `RedisStreamsBroker`** with the consuming interface
+  django-database-task gives its pull brokers: `receive()` returns
+  `BrokerMessage` objects, `ack()` sends `XACK` and `XDEL`, `nack()` leaves
+  the entry pending, and `claim_stale_messages()` takes over what a dead
+  consumer left. Reading, acknowledging, promoting delayed tasks and the
+  stale-message sweep moved out of the `executor` functions into it; those
+  functions still work as they did, as wrappers over the broker. A backend
+  subclass can name another class with `broker_class`.
+  ([#26](https://github.com/tokibito/django-tasks-redis/issues/26))
+
+### Changed
+
+- `run_redis_tasks` receives from the broker and acknowledges each message
+  after the task ran, the way `run_database_tasks` does against a pull
+  broker. Its options and output are unchanged.
+- `executor.fetch_task()` still returns the task hash with the message handle
+  under `_stream_key` and `_message_id`, but the handle is no longer how the
+  worker acknowledges a message. Use `backend.broker.receive()` and `ack()`
+  for a loop of your own.
+- `RedisTaskBackend._ensure_consumer_group()`, a private method, is gone;
+  `backend.broker.ensure_consumer_group(stream_key)` replaces it.
 ## 0.2.1
 
 ### Fixed

@@ -349,6 +349,43 @@ count = executor.get_pending_task_count()
 deleted = executor.purge_completed_tasks(days=7)
 ```
 
+### The stream broker
+
+The functions above are thin wrappers over the backend's broker, which is
+where reading, acknowledging and reclaiming messages live. It has the shape of
+a pull broker in django-database-task, so a worker loop written against one
+package reads the same against the other:
+
+```python
+from django.tasks import task_backends
+
+backend = task_backends["default"]
+broker = backend.broker  # a django_tasks_redis.brokers.RedisStreamsBroker
+
+for message in broker.receive(
+    queue_name="default", wait_seconds=5, worker_id=worker_id
+):
+    backend.run_task(message.task_id, worker_id=worker_id)
+    broker.ack(message)
+```
+
+| Method | What it does on a Redis stream |
+|--------|--------------------------------|
+| `receive(queue_name=None, max_messages=1, wait_seconds=0, worker_id=None)` | `XREADGROUP` as the consumer `worker_id`: the messages it already holds first, then new ones in priority order. Messages whose task is no longer `READY`, or whose task is gone, are acknowledged inside the call and not returned |
+| `ack(message)` | `XACK` and `XDEL`. Until it is called the message stays pending for the consumer |
+| `nack(message)` | Nothing. A pending entry is what a stream has instead of redelivery: the same consumer is served it again, or another worker takes it over once it has been idle for `REDIS_CLAIM_TIMEOUT` |
+| `claim_stale_messages(worker_id, claim_timeout=None, max_deliveries=None)` | `XPENDING` and `XCLAIM`: take over what a dead consumer left, hand a task it left `RUNNING` back as `READY`, and give up on one started `REDIS_MAX_DELIVERIES` times |
+
+`worker_id` is the consumer name in the group, so it has to be the id the
+worker keeps using: a message received as one consumer is only served again
+to that consumer, or to whoever reclaims it.
+
+There is no `notify()` step, unlike the brokers in django-database-task: the
+backend writes to the stream when it enqueues, so the stream is the queue
+rather than a notification about one. `broker_class` on the backend names
+the class to build; a subclass of `RedisStreamsBroker` can change how any of
+this is done.
+
 ## Contributing
 
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
