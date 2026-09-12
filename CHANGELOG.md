@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 **The HTTP task endpoints are closed by default.** A project that uses them
 has to override `get_auth_handler()` before upgrading, or every call answers
