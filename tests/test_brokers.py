@@ -312,3 +312,173 @@ class TestExecutorCompatibility:
         redis_backend.broker.receive(worker_id="dead-worker")
 
         assert executor.claim_stale_tasks(claim_timeout=0, worker_id=WORKER) == 1
+
+
+def consumer_names(backend, stream_key):
+    return sorted(
+        c["name"]
+        for c in backend.get_client().xinfo_consumers(
+            stream_key, backend.consumer_group
+        )
+    )
+
+
+@pytest.mark.django_db
+class TestConsumerCleanup:
+    """The group must not grow by one consumer per worker start."""
+
+    def test_sweep_removes_a_dead_consumer_that_holds_nothing(
+        self, redis_backend, clean_redis
+    ):
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        broker = redis_backend.broker
+        stream_key = stream_key_for(redis_backend)
+        (message,) = broker.receive(worker_id="dead-worker")
+        broker.ack(message)
+        assert consumer_names(redis_backend, stream_key) == ["dead-worker"]
+
+        broker.claim_stale_messages(WORKER, claim_timeout=0)
+
+        assert consumer_names(redis_backend, stream_key) == []
+
+    def test_sweep_keeps_the_sweeping_consumer(self, redis_backend, clean_redis):
+        """A consumer blocked in XREADGROUP looks idle too; this one is alive."""
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        broker = redis_backend.broker
+        stream_key = stream_key_for(redis_backend)
+        (message,) = broker.receive(worker_id=WORKER)
+        broker.ack(message)
+
+        broker.claim_stale_messages(WORKER, claim_timeout=0)
+
+        assert consumer_names(redis_backend, stream_key) == [WORKER]
+
+    def test_sweep_keeps_a_consumer_that_holds_a_message(
+        self, redis_backend, clean_redis
+    ):
+        """Deleting it would delete its pending entries, and the tasks with them."""
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        broker = redis_backend.broker
+        stream_key = stream_key_for(redis_backend)
+        broker.receive(worker_id="busy-worker")
+
+        # Not stale yet, so nothing is reclaimed and the message stays with it.
+        broker.claim_stale_messages(WORKER, claim_timeout=300)
+
+        assert consumer_names(redis_backend, stream_key) == ["busy-worker"]
+        assert pending(redis_backend, stream_key) == 1
+
+    def test_sweep_removes_a_dead_consumer_once_its_message_is_reclaimed(
+        self, redis_backend, clean_redis
+    ):
+        from tests.tasks import simple_task
+
+        result = simple_task.enqueue(1, 2)
+        broker = redis_backend.broker
+        stream_key = stream_key_for(redis_backend)
+        broker.receive(worker_id="dead-worker")
+
+        assert broker.claim_stale_messages(WORKER, claim_timeout=0) == 1
+
+        # The message now belongs to the live worker, so it is the only
+        # consumer left, and the task still runs.
+        assert consumer_names(redis_backend, stream_key) == [WORKER]
+        assert [m.task_id for m in broker.receive(worker_id=WORKER)] == [result.id]
+
+    def test_sweep_keeps_a_recently_active_consumer(self, redis_backend, clean_redis):
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        broker = redis_backend.broker
+        stream_key = stream_key_for(redis_backend)
+        (message,) = broker.receive(worker_id="other-live-worker")
+        broker.ack(message)
+
+        broker.claim_stale_messages(WORKER, claim_timeout=300)
+
+        assert consumer_names(redis_backend, stream_key) == ["other-live-worker"]
+
+    def test_remove_consumer_takes_the_worker_out_of_every_stream(
+        self, redis_backend, clean_redis
+    ):
+        from tests.tasks import high_priority_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        high_priority_task.enqueue()
+        broker = redis_backend.broker
+        for message in broker.receive(max_messages=2, worker_id=WORKER):
+            broker.ack(message)
+
+        # A read touches every priority stream, so the worker is a consumer
+        # on all three, the empty low stream included.
+        assert broker.remove_consumer(WORKER) == 3
+
+        for level in ("high", "normal", "low"):
+            stream_key = stream_key_for(redis_backend, level)
+            assert consumer_names(redis_backend, stream_key) == []
+
+    def test_remove_consumer_keeps_one_that_holds_a_message(
+        self, redis_backend, clean_redis
+    ):
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        broker = redis_backend.broker
+        stream_key = stream_key_for(redis_backend)
+        broker.receive(worker_id=WORKER)
+
+        # Gone from the high and low streams, where it holds nothing; kept on
+        # the normal one, where its message is.
+        assert broker.remove_consumer(WORKER) == 2
+
+        assert consumer_names(redis_backend, stream_key) == [WORKER]
+        assert pending(redis_backend, stream_key) == 1
+        high_key = stream_key_for(redis_backend, "high")
+        assert consumer_names(redis_backend, high_key) == []
+
+    def test_remove_consumer_before_any_stream_exists(self, redis_backend, clean_redis):
+        assert redis_backend.broker.remove_consumer(WORKER) == 0
+
+    def test_worker_removes_its_consumer_on_exit(self, redis_backend, clean_redis):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        stream_key = stream_key_for(redis_backend)
+
+        call_command("run_redis_tasks", stdout=StringIO())
+
+        assert consumer_names(redis_backend, stream_key) == []
+
+    def test_worker_leaves_its_consumer_when_a_message_is_still_pending(
+        self, redis_backend, clean_redis
+    ):
+        """The message a failed start left pending must stay recoverable."""
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from django_tasks_redis.utils import get_result_key
+        from tests.tasks import simple_task
+
+        result = simple_task.enqueue(1, 2)
+        redis_backend.get_client().hset(
+            get_result_key(redis_backend.key_prefix, redis_backend.alias, result.id),
+            "task_path",
+            "tests.tasks.gone_away",
+        )
+        stream_key = stream_key_for(redis_backend)
+
+        call_command("run_redis_tasks", stdout=StringIO(), stderr=StringIO())
+
+        assert len(consumer_names(redis_backend, stream_key)) == 1
+        assert pending(redis_backend, stream_key) == 1

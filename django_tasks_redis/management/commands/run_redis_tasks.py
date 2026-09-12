@@ -106,6 +106,9 @@ class Command(BaseCommand):
                 claim_interval=claim_interval,
             )
         finally:
+            # Leave nothing behind in the group: a consumer that holds no
+            # pending message is of no use once its worker has exited.
+            self._remove_consumer(broker, worker_id)
             broker.close()
 
         self.stdout.write(
@@ -230,6 +233,14 @@ class Command(BaseCommand):
             f"Processed task {result.id[:8]}: {status_style(result.status)}"
         )
         return result
+
+    def _remove_consumer(self, broker, worker_id):
+        """Take this worker's consumer out of the group on the way out."""
+        try:
+            broker.remove_consumer(worker_id)
+        except Exception:
+            # Housekeeping only: the sweep removes it later either way.
+            logger.exception("Worker %s failed to remove its consumer", worker_id)
 
     def _claim_stale_messages(self, broker, worker_id):
         """Take over the messages of workers that died, for this consumer."""

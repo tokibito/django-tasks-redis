@@ -90,6 +90,13 @@ class RedisStreamsBroker(PullBroker):
         help. One whose task is not due yet goes back to the delayed set. A
         message that is returned stays pending until ack() is called, so a
         worker that dies before then leaves it for claim_stale_messages().
+
+    Consumer cleanup:
+        Every worker start adds a consumer to the group, and Redis never
+        removes one by itself. A worker that exits cleanly removes its own
+        with remove_consumer(); one that died is removed by the sweep once its
+        messages have been reclaimed and it has been idle for the claim
+        timeout, so the group does not grow by one entry per worker start.
     """
 
     def __init__(self, backend, options=None):
@@ -396,6 +403,12 @@ class RedisStreamsBroker(PullBroker):
         Staleness is the only thing that tells a dead worker apart from a slow
         one, so this is the only place that decision can be made.
 
+        Consumers that have been idle for the claim timeout and hold no
+        pending message are removed from the group at the same time, other
+        than `worker_id` itself: a consumer blocked in XREADGROUP looks just
+        as idle, and the sweeping worker is the one consumer known to be
+        alive.
+
         Args:
             worker_id: Consumer id to claim the messages for.
             claim_timeout: Seconds a message has to have been pending. If None,
@@ -431,9 +444,81 @@ class RedisStreamsBroker(PullBroker):
                     worker_id,
                     claimed_count,
                 )
+                # There is more to reclaim; the dead consumers still hold it,
+                # so they are left for the sweep that finishes the job.
                 return claimed_count
 
+        for stream_key in self.stream_keys():
+            self._remove_idle_consumers(stream_key, worker_id, claim_timeout_ms)
+
         return claimed_count
+
+    def _remove_idle_consumers(self, stream_key, worker_id, idle_timeout_ms):
+        """
+        Remove the consumers of one stream that are idle and hold nothing.
+
+        Deleting a consumer deletes its pending entries with it, which would
+        lose the tasks they name, so only a consumer with none is removed.
+        Idle time is measured by Redis, so no clock of ours is involved.
+        """
+        removed = 0
+        for consumer in self._consumers(stream_key):
+            if consumer["name"] == worker_id or consumer["pending"]:
+                continue
+            if consumer["idle"] < idle_timeout_ms:
+                continue
+            self.client.xgroup_delconsumer(
+                stream_key, self.consumer_group, consumer["name"]
+            )
+            removed += 1
+
+        if removed:
+            logger.info("Removed %s idle consumer(s) from %s", removed, stream_key)
+        return removed
+
+    def remove_consumer(self, worker_id):
+        """
+        Remove `worker_id` from the consumer group of every stream it read.
+
+        For a worker that is exiting: its consumer would otherwise stay in the
+        group until a sweep found it idle. A consumer that still holds pending
+        messages is left alone, since deleting it would lose them; the sweep
+        reclaims them first and removes the consumer then.
+
+        Returns:
+            Number of streams the consumer was removed from.
+        """
+        removed = 0
+        for stream_key in self.stream_keys():
+            for consumer in self._consumers(stream_key):
+                if consumer["name"] != worker_id:
+                    continue
+                if consumer["pending"]:
+                    logger.info(
+                        "Consumer %s keeps %s pending message(s) on %s; left in "
+                        "the group for the stale-message sweep",
+                        worker_id,
+                        consumer["pending"],
+                        stream_key,
+                    )
+                    break
+                self.client.xgroup_delconsumer(
+                    stream_key, self.consumer_group, worker_id
+                )
+                removed += 1
+                break
+        return removed
+
+    def _consumers(self, stream_key):
+        """XINFO CONSUMERS for one stream, or nothing if it has no group yet."""
+        try:
+            return self.client.xinfo_consumers(stream_key, self.consumer_group)
+        except redis.ResponseError as error:
+            # A stream nothing was ever written to has no group. Redis reports
+            # a missing stream as "no such key" rather than NOGROUP.
+            if not is_missing_group(error) and "no such key" not in str(error):
+                raise
+            return []
 
     def _claim_stale_in_stream(
         self, stream_key, worker_id, claim_timeout_ms, max_deliveries, limit
