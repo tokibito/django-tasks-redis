@@ -3,18 +3,21 @@ Management command to run Redis task worker.
 
 The worker receives from the backend's broker, runs the task each message
 names, and acknowledges the message. It is the same loop `run_database_tasks`
-runs against a pull broker in django-database-task.
+runs against a pull broker in django-database-task, with the same graceful
+shutdown: on SIGTERM or SIGINT no new task is started, the running one is
+finished and its result written, and the process exits.
 """
 
 import logging
-import signal
-import time
+from contextlib import ExitStack
+from time import monotonic
 
 from django.core.management.base import BaseCommand
 from django.tasks import task_backends
 from django.tasks.base import TaskResultStatus
 from django.utils.translation import gettext_lazy as _
 
+from django_tasks_redis.shutdown import GracefulShutdown, signal_name
 from django_tasks_redis.utils import generate_worker_id
 
 logger = logging.getLogger("django_tasks_redis")
@@ -22,10 +25,6 @@ logger = logging.getLogger("django_tasks_redis")
 
 class Command(BaseCommand):
     help = _("Run a worker to process Redis tasks")
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.should_stop = False
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -64,6 +63,23 @@ class Command(BaseCommand):
             default=60.0,
             help=_("Stale task claim interval in seconds (default: 60.0)"),
         )
+        parser.add_argument(
+            "--shutdown-timeout",
+            type=float,
+            default=0.0,
+            help=_(
+                "Maximum seconds to wait for the running task after receiving "
+                "SIGTERM/SIGINT before forcing exit (0=wait indefinitely, default: 0)"
+            ),
+        )
+        parser.add_argument(
+            "--no-graceful-shutdown",
+            action="store_true",
+            help=_(
+                "Do not install SIGTERM/SIGINT handlers; the process is "
+                "terminated immediately, even while a task is running"
+            ),
+        )
 
     def handle(self, *args, **options):
         queue_name = options["queue_name"]
@@ -72,10 +88,8 @@ class Command(BaseCommand):
         interval = options["interval"]
         max_tasks = options["max_tasks"]
         claim_interval = options["claim_interval"]
-
-        # Set up signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        shutdown_timeout = options["shutdown_timeout"]
+        graceful = not options["no_graceful_shutdown"]
 
         backend = task_backends[backend_name]
         broker = backend.broker
@@ -92,9 +106,30 @@ class Command(BaseCommand):
             self.stdout.write(f"  Queue: {queue_name}")
         self.stdout.write(f"  Backend: {backend_name}")
         self.stdout.write(f"  Continuous: {continuous}")
+        if graceful:
+            timeout_label = (
+                f"{shutdown_timeout}s" if shutdown_timeout > 0 else "unlimited"
+            )
+            self.stdout.write(f"  Graceful shutdown: enabled (timeout={timeout_label})")
+        else:
+            self.stdout.write("  Graceful shutdown: disabled")
 
-        try:
+        shutdown = GracefulShutdown(
+            timeout=shutdown_timeout,
+            on_signal=self._report_signal,
+            # Signals are reported on stdout by the callback above.
+            log_signals=False,
+        )
+
+        with ExitStack() as stack:
+            if graceful:
+                stack.enter_context(shutdown)
+            # Callbacks run last-in first-out: the consumer is removed while
+            # the broker is still open, then the broker is closed.
+            stack.callback(broker.close)
+            stack.callback(self._remove_consumer, broker, worker_id)
             tasks_processed = self._process_tasks(
+                shutdown=shutdown,
                 backend=backend,
                 broker=broker,
                 queue_name=queue_name,
@@ -105,11 +140,11 @@ class Command(BaseCommand):
                 max_tasks=max_tasks,
                 claim_interval=claim_interval,
             )
-        finally:
-            # Leave nothing behind in the group: a consumer that holds no
-            # pending message is of no use once its worker has exited.
-            self._remove_consumer(broker, worker_id)
-            broker.close()
+
+        if shutdown.is_set():
+            self.stdout.write(
+                self.style.WARNING("\nShutdown complete (no task was interrupted).")
+            )
 
         self.stdout.write(
             self.style.SUCCESS(f"Worker stopped. Processed {tasks_processed} task(s).")
@@ -117,6 +152,7 @@ class Command(BaseCommand):
 
     def _process_tasks(
         self,
+        shutdown,
         backend,
         broker,
         queue_name,
@@ -128,13 +164,12 @@ class Command(BaseCommand):
         claim_interval,
     ):
         tasks_processed = 0
-        last_claim_time = time.time()
+        # No sweep on the first pass: the interval has to elapse first.
+        next_claim = monotonic() + claim_interval
 
-        while not self.should_stop:
-            # Check if we should claim stale tasks
-            current_time = time.time()
-            if current_time - last_claim_time >= claim_interval:
-                last_claim_time = current_time
+        while not shutdown.is_set():
+            if monotonic() >= next_claim:
+                next_claim = monotonic() + claim_interval
                 self._claim_stale_messages(broker, worker_id)
 
             try:
@@ -149,9 +184,8 @@ class Command(BaseCommand):
                 self.stderr.write(
                     self.style.ERROR("Failed to receive a task, see the logs")
                 )
-                if not continuous:
+                if not continuous or shutdown.wait(interval):
                     break
-                time.sleep(interval)
                 continue
 
             if not messages:
@@ -160,8 +194,9 @@ class Command(BaseCommand):
                     break
 
                 # Wait before polling again, unless the receive already waited.
-                if not wait_seconds:
-                    time.sleep(interval)
+                # The wait ends early when a shutdown is requested.
+                if not wait_seconds and shutdown.wait(interval):
+                    break
                 continue
 
             for message in messages:
@@ -177,9 +212,8 @@ class Command(BaseCommand):
                     self.stderr.write(
                         self.style.ERROR("Failed to process a task, see the logs")
                     )
-                    if not continuous:
+                    if not continuous or shutdown.wait(interval):
                         return tasks_processed
-                    time.sleep(interval)
                     continue
 
                 if result is None:
@@ -253,7 +287,16 @@ class Command(BaseCommand):
         if claimed > 0:
             self.stdout.write(f"Claimed {claimed} stale task(s)")
 
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals gracefully."""
-        self.stdout.write(self.style.WARNING("\nReceived shutdown signal, stopping..."))
-        self.should_stop = True
+    def _report_signal(self, signum, count):
+        """Report a received shutdown signal (called from the signal handler)."""
+        name = signal_name(signum)
+        if count == 1:
+            message = (
+                f"\nReceived {name}: no new tasks will be started. "
+                "Waiting for the running task to finish "
+                "(send the signal again to force exit)."
+            )
+        else:
+            message = f"\nReceived {name} again: forcing immediate exit."
+        self.stdout.write(self.style.WARNING(message))
+        self.stdout.flush()

@@ -14,6 +14,7 @@ A Redis/Valkey-backed task queue backend for Django 6.0's built-in task framewor
 - Support for both Redis and Valkey backends
 - Delayed task execution with scheduled times
 - Priority-based task processing
+- Graceful shutdown: workers finish the running task before exiting on `SIGTERM`
 - Crash recovery with automatic task reclaim
 - Django Admin integration for task monitoring and management
 - HTTP endpoints for external triggers (webhooks, Cloud Scheduler, etc.)
@@ -220,12 +221,15 @@ Start a worker to process tasks:
 python manage.py run_redis_tasks [options]
 
 Options:
-  --queue QUEUE_NAME      Process only tasks from specific queue
-  --backend BACKEND_NAME  Backend name (default: default)
-  --continuous            Continuous mode (don't exit)
-  --interval SECONDS      Polling interval (default: 1)
-  --max-tasks N           Maximum tasks to process (0=unlimited)
-  --claim-interval SECS   Stale task claim interval (default: 60)
+  --queue QUEUE_NAME        Process only tasks from specific queue
+  --backend BACKEND_NAME    Backend name (default: default)
+  --continuous              Continuous mode (don't exit)
+  --interval SECONDS        Polling interval (default: 1)
+  --max-tasks N             Maximum tasks to process (0=unlimited)
+  --claim-interval SECS     Stale task claim interval (default: 60)
+  --shutdown-timeout SECS   Maximum wait for the running task after SIGTERM/SIGINT
+                            before forcing exit (0=wait indefinitely, default: 0)
+  --no-graceful-shutdown    Do not install SIGTERM/SIGINT handlers
 ```
 
 A worker handles one task at a time. Run several processes to process more,
@@ -233,8 +237,9 @@ each gets its own consumer in the group.
 
 In `--continuous` mode the worker waits on the streams for up to
 `REDIS_BLOCK_TIMEOUT` instead of polling, so `--interval` only applies when
-that wait is disabled (`REDIS_BLOCK_TIMEOUT: 0`). The block timeout also bounds
-how long a shutdown signal can take to be noticed.
+that wait is disabled (`REDIS_BLOCK_TIMEOUT: 0`). The wait is taken in one
+second steps, so a shutdown signal is noticed within about a second whatever
+the block timeout. See [Graceful Shutdown](#graceful-shutdown).
 
 ### purge_completed_redis_tasks
 
@@ -250,6 +255,157 @@ Options:
   --dry-run               Only show count, don't delete
   --backend BACKEND_NAME  Backend name (default: default)
 ```
+
+## Graceful Shutdown
+
+When a worker is redeployed, the orchestrator (Kubernetes, Cloud Run, systemd,
+Docker, supervisord, ...) sends `SIGTERM` and kills the process with `SIGKILL`
+after a grace period. Without any handling, a task that happens to be running
+at that moment is killed halfway through, and only runs again once the
+stale-message sweep of another worker finds its message after
+`REDIS_CLAIM_TIMEOUT`.
+
+`run_redis_tasks` installs `SIGTERM` and `SIGINT` handlers by default:
+
+1. On the first signal the worker stops fetching new tasks. A worker waiting
+   on the streams stops waiting within about a second.
+2. The task currently being executed keeps running until it finishes and its
+   result is written to Redis, and its message is acknowledged.
+3. The worker removes its consumer from the group and exits with status
+   code 0.
+
+```console
+$ python manage.py run_redis_tasks --continuous
+Starting Redis task worker: worker-1-3f2a9c11
+  Backend: default
+  Continuous: True
+  Graceful shutdown: enabled (timeout=unlimited)
+Processed task 1e2d5c0a: SUCCESSFUL
+^C
+Received SIGINT: no new tasks will be started. Waiting for the running task to finish (send the signal again to force exit).
+Processed task 7b1f09d3: SUCCESSFUL
+
+Shutdown complete (no task was interrupted).
+Worker stopped. Processed 2 task(s).
+```
+
+### Shutdown timeout
+
+By default the worker waits as long as the running task needs. Use
+`--shutdown-timeout` to put an upper bound on it, so the process exits on its
+own terms instead of being `SIGKILL`ed by the platform:
+
+```bash
+python manage.py run_redis_tasks --continuous --shutdown-timeout 25
+```
+
+If the task is still running when the timeout expires, the process exits
+immediately with status code 1. The task is not lost: its message stays
+pending and its hash `RUNNING`, and another worker reclaims and runs it again
+after `REDIS_CLAIM_TIMEOUT`, so this is one of the cases the
+[at-least-once guarantee](#delivery-guarantees) covers. Set the timeout to a
+value slightly below the platform's termination grace period, and keep the
+grace period longer than your longest task whenever possible.
+
+Sending the signal a second time (for example pressing Ctrl-C twice) also
+forces an immediate exit, with the same consequences.
+
+### Cooperating from inside a task
+
+Long running tasks can check whether a shutdown was requested and stop early,
+so the worker does not have to wait for the whole task to complete:
+
+```python
+from django.tasks import task
+
+from django_tasks_redis import is_shutdown_requested
+
+
+@task
+def import_rows(row_ids):
+    processed = []
+    for row_id in row_ids:
+        if is_shutdown_requested():
+            # Requeue the remaining work and return early
+            import_rows.enqueue([i for i in row_ids if i not in processed])
+            break
+        handle(row_id)
+        processed.append(row_id)
+    return len(processed)
+```
+
+`is_shutdown_requested()` returns `False` when no worker with graceful shutdown
+is active, so tasks using it stay safe to call from a web request, a test, or
+the HTTP endpoints.
+
+### Deployment examples
+
+**Kubernetes** - set `terminationGracePeriodSeconds` longer than the worker's
+shutdown timeout:
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+    - name: worker
+      command:
+        - python
+        - manage.py
+        - run_redis_tasks
+        - --continuous
+        - --shutdown-timeout=50
+```
+
+**systemd** - `TimeoutStopSec` controls how long systemd waits before
+`SIGKILL`:
+
+```ini
+[Service]
+ExecStart=/srv/app/venv/bin/python manage.py run_redis_tasks --continuous --shutdown-timeout=50
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=always
+```
+
+**Docker / Docker Compose** - `docker stop` sends `SIGTERM` and waits for
+`--time` (10 seconds by default):
+
+```yaml
+services:
+  worker:
+    command: python manage.py run_redis_tasks --continuous --shutdown-timeout=25
+    stop_grace_period: 30s
+```
+
+Make sure the worker is PID 1 or that the signal reaches it (use the exec form
+of `CMD`, or an init such as `tini`, rather than wrapping the command in a
+shell script that swallows signals).
+
+### Using it in your own worker loop
+
+The shutdown handling is available as a public API, for custom worker loops:
+
+```python
+from django_tasks_redis import GracefulShutdown, executor
+
+with GracefulShutdown(timeout=50) as shutdown:
+    while not shutdown.is_set():
+        results = executor.process_tasks(max_tasks=10, stop_event=shutdown)
+        if not results and shutdown.wait(5):  # interruptible sleep
+            break
+```
+
+| API | Description |
+|-----|-------------|
+| `GracefulShutdown(signals=None, timeout=0, on_signal=None, force_on_repeat=True)` | Context manager that installs the signal handlers |
+| `shutdown.is_set()` | True once a shutdown has been requested |
+| `shutdown.wait(seconds)` | Sleep, returning early (True) when a shutdown is requested |
+| `shutdown.set()` | Request a shutdown programmatically |
+| `executor.process_tasks(..., stop_event=...)` | Stop starting new tasks once the event is set |
+| `broker.receive(..., wait_seconds=...)` | Stops waiting early while the active `GracefulShutdown` is set |
+| `is_shutdown_requested()` | True if the active worker was asked to shut down |
+
+The same API, with the same names, is in django-database-task.
 
 ## Django Admin
 

@@ -14,6 +14,21 @@
   subclass can name another class with `broker_class`.
   ([#26](https://github.com/tokibito/django-tasks-redis/issues/26))
 
+- **Graceful shutdown for `run_redis_tasks`**, the one django-database-task
+  has. On `SIGTERM` or `SIGINT` the worker starts no new task, finishes the
+  one it is running, writes its result and exits 0; a second signal forces
+  an immediate exit, and `--shutdown-timeout` bounds the wait so the process
+  exits on its own terms rather than being `SIGKILL`ed by the platform.
+  `--no-graceful-shutdown` leaves the signal handlers alone. Before, the
+  handler only set a flag: a second signal did nothing, and nothing was
+  reported when the first arrived. The worker's blocking read on the streams
+  is now taken in one second steps, so a shutdown is noticed within about a
+  second instead of `REDIS_BLOCK_TIMEOUT`. `GracefulShutdown`,
+  `is_shutdown_requested()` and `get_active_shutdown()` are importable from
+  `django_tasks_redis` for a worker loop or a task function of your own, and
+  `executor.process_tasks()` takes a `stop_event`.
+  ([#22](https://github.com/tokibito/django-tasks-redis/issues/22))
+
 ### Fixed
 
 - **A worker and an external trigger could both run the same task.** The
