@@ -154,7 +154,7 @@ TASKS = {
             "REDIS_CONSUMER_GROUP": "django_tasks_workers",  # Consumer group name
             "REDIS_CLAIM_TIMEOUT": 300,  # Stale message claim timeout (seconds)
             "REDIS_BLOCK_TIMEOUT": 5000,  # XREADGROUP block timeout (milliseconds)
-            "REDIS_MAX_DELIVERIES": 5,  # Give up on a message after this many attempts (0 = never)
+            "REDIS_MAX_DELIVERIES": 5,  # Give up on a task started this many times without finishing (0 = never)
             "REDIS_SCAN_BATCH_SIZE": 500,  # Tasks read per round trip when walking the index
         },
     },
@@ -193,11 +193,12 @@ again. Two consequences are worth planning for:
 - **Task functions should be idempotent.** A worker can die between finishing
   the work and recording the result, in which case the task runs again.
 
-A message that keeps coming back is given up on after `REDIS_MAX_DELIVERIES`
-attempts: the task is marked FAILED with a `TaskAbandoned` error, so it shows up
-in the admin instead of being retried forever. Redis counts a redelivery as well
-as a reclaim, so the default of 5 is roughly two recovery attempts. Set it to
-`0` to disable the cap.
+A task that has been started `REDIS_MAX_DELIVERIES` times without finishing is
+given up on the next time its message is reclaimed: it is marked FAILED with a
+`TaskAbandoned` error, so it shows up in the admin instead of being retried
+forever. Only starts count, not deliveries, so a message a worker held without
+running it does not use up an attempt. A task that already finished keeps its
+result. Set it to `0` to disable the cap.
 
 ## Management Commands
 

@@ -73,8 +73,8 @@ class RedisTaskBackend(BaseTaskBackend):
         )
         self.claim_timeout = self.options.get("REDIS_CLAIM_TIMEOUT", 300)
         self.block_timeout = self.options.get("REDIS_BLOCK_TIMEOUT", 5000)
-        # Without a cap, a task that can never run is redelivered forever.
-        # 0 disables it.
+        # Without a cap, a task that can never finish is started again
+        # forever. Counts starts, not deliveries. 0 disables it.
         self.max_deliveries = self.options.get("REDIS_MAX_DELIVERIES", 5)
         self.scan_batch_size = self.options.get("REDIS_SCAN_BATCH_SIZE", 500)
 
@@ -472,16 +472,26 @@ class RedisTaskBackend(BaseTaskBackend):
             task_id: Task ID string.
             reason: Human-readable explanation, stored as the error traceback.
 
+        Only a task that is READY or RUNNING can be given up on. One that
+        already finished keeps its result: a worker that wrote SUCCESSFUL and
+        died before acknowledging its message must not be turned into a
+        failure by the sweep that finds the message.
+
         Returns:
-            True if recorded, False if the task no longer exists.
+            True if recorded, False if the task no longer exists or already
+            finished.
         """
         client = self.get_client()
         result_key = get_result_key(self.key_prefix, self.alias, task_id)
 
-        task_data = client.hgetall(result_key)
-        if not task_data:
+        if not self.transition_task_status(
+            task_id,
+            TaskResultStatus.FAILED,
+            [TaskResultStatus.READY, TaskResultStatus.RUNNING],
+        ):
             return False
 
+        task_data = client.hgetall(result_key)
         self._record_error(
             result_key,
             task_data,
