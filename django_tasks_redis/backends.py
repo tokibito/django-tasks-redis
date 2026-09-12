@@ -32,6 +32,53 @@ from .utils import (
 
 logger = logging.getLogger("django_tasks_redis")
 
+# Claim a task for a run: move it to RUNNING and record the attempt, but only
+# from one of the statuses the caller expects. Check and write in one step, or a
+# worker that has read the message and an external trigger for the same task
+# both see READY and both run it.
+#
+# KEYS[1] the task hash
+# ARGV[1] the time of the attempt (ISO 8601)
+# ARGV[2] the worker id, or "" to record none
+# ARGV[3] the status to move to (RUNNING)
+# ARGV[4..] the statuses the task may be claimed from
+#
+# Returns 1 when claimed, 0 when the task is in another status, -1 when there is
+# no such task.
+_CLAIM_TASK = """
+local status = redis.call('HGET', KEYS[1], 'status')
+if status == false then
+    return -1
+end
+local allowed = false
+for i = 4, #ARGV do
+    if status == ARGV[i] then
+        allowed = true
+    end
+end
+if not allowed then
+    return 0
+end
+local fields = {'status', ARGV[3], 'last_attempted_at', ARGV[1]}
+local started_at = redis.call('HGET', KEYS[1], 'started_at')
+if started_at == false or started_at == '' then
+    fields[#fields + 1] = 'started_at'
+    fields[#fields + 1] = ARGV[1]
+end
+if ARGV[2] ~= '' then
+    local raw = redis.call('HGET', KEYS[1], 'worker_ids_json')
+    local worker_ids = {}
+    if raw and raw ~= '' then
+        worker_ids = cjson.decode(raw)
+    end
+    worker_ids[#worker_ids + 1] = ARGV[2]
+    fields[#fields + 1] = 'worker_ids_json'
+    fields[#fields + 1] = cjson.encode(worker_ids)
+end
+redis.call('HSET', KEYS[1], unpack(fields))
+return 1
+"""
+
 # Read and write in one step, or two callers both see an executable task and
 # both run it.
 _TRANSITION_TASK_STATUS = """
@@ -279,54 +326,82 @@ class RedisTaskBackend(BaseTaskBackend):
 
         return result
 
-    def run_task(self, task_id, worker_id=None):
+    def claim_task(self, task_id, worker_id=None, from_statuses=None):
         """
-        Execute a task by ID (called from executor/management command).
+        Claim a task for a run: move it to RUNNING and record the attempt.
+
+        The status check and the write are one step, so of two callers racing
+        for the same task exactly one wins. `started_at` is set on the first
+        attempt only, `last_attempted_at` on every one, and `worker_id` is
+        appended to the task's worker ids.
+
+        Args:
+            task_id: Task ID string.
+            worker_id: Worker identifier to record, or None.
+            from_statuses: Statuses the task may be claimed from. Defaults to
+                READY alone.
+
+        Returns:
+            True if this caller claimed the task, False if it is in another
+            status.
+
+        Raises:
+            TaskResultDoesNotExist: If no task with the given ID exists.
+        """
+        if from_statuses is None:
+            from_statuses = [TaskResultStatus.READY]
+
+        claim = self.get_client().register_script(_CLAIM_TASK)
+        outcome = claim(
+            keys=[get_result_key(self.key_prefix, self.alias, task_id)],
+            args=[
+                serialize_datetime(timezone.now()),
+                worker_id or "",
+                TaskResultStatus.RUNNING,
+                *from_statuses,
+            ],
+        )
+        if outcome == -1:
+            raise TaskResultDoesNotExist(task_id)
+        return outcome == 1
+
+    def run_task(self, task_id, worker_id=None, from_statuses=None):
+        """
+        Claim a task and execute it (called from executor/management command).
+
+        The task is claimed with :meth:`claim_task` first, so a worker that read
+        the task's message and an external trigger for the same task cannot
+        both run it: whichever claims second gets None and runs nothing.
 
         Args:
             task_id: Task ID string.
             worker_id: Optional worker identifier.
+            from_statuses: Statuses the task may be run from. Defaults to READY
+                alone; ``run_task_by_id(allow_retry=True)`` adds FAILED.
 
         Returns:
-            TaskResult after execution.
+            TaskResult after execution, or None if the task was not in one of
+            `from_statuses` and so was not run.
+
+        Raises:
+            TaskResultDoesNotExist: If no task with the given ID exists.
         """
         client = self.get_client()
         result_key = get_result_key(self.key_prefix, self.alias, task_id)
 
+        if not self.claim_task(task_id, worker_id, from_statuses):
+            return None
+
+        # Read back what the claim wrote, so the result handed to task_started
+        # carries the attempt exactly as stored.
         task_data = client.hgetall(result_key)
         if not task_data:
             raise TaskResultDoesNotExist(task_id)
-
-        now = timezone.now()
-
-        # Update status to RUNNING
-        worker_ids = deserialize_json(task_data.get("worker_ids_json", "[]")) or []
-        if worker_id:
-            worker_ids.append(worker_id)
-
-        started_at = task_data.get("started_at", "")
-        if not started_at:
-            started_at = serialize_datetime(now)
-
-        client.hset(
-            result_key,
-            mapping={
-                "status": TaskResultStatus.RUNNING,
-                "started_at": started_at,
-                "last_attempted_at": serialize_datetime(now),
-                "worker_ids_json": serialize_json(worker_ids),
-            },
-        )
 
         # Past the RUNNING write but before the block that records failures, so
         # an error here would leave the task RUNNING with nothing to explain it.
         try:
             task = self._resolve_task(task_data["task_path"])
-            task_data["status"] = TaskResultStatus.RUNNING
-            task_data["started_at"] = started_at
-            task_data["last_attempted_at"] = serialize_datetime(now)
-            task_data["worker_ids_json"] = serialize_json(worker_ids)
-
             task_result = self._data_to_result(task_data, task)
             task_started.send(sender=self.__class__, task_result=task_result)
         except Exception as e:

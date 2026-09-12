@@ -14,8 +14,26 @@
   subclass can name another class with `broker_class`.
   ([#26](https://github.com/tokibito/django-tasks-redis/issues/26))
 
+### Fixed
+
+- **A worker and an external trigger could both run the same task.** The
+  worker path checked that a task was READY when it read the message, and
+  `run_task()` later wrote RUNNING with a plain `HSET`; a request to
+  `execute/<id>/` (or any `run_task_by_id()` caller) landing in between
+  claimed the task too, and both executed it. `run_task()` now claims the
+  task itself, in one script that checks the status and records the attempt
+  together, and returns `None` when the claim is lost. The worker
+  acknowledges such a message like any other for a task that is no longer
+  READY and moves on to the next one; `run_task_by_id()` uses the same claim
+  instead of one of its own.
+  ([#18](https://github.com/tokibito/django-tasks-redis/issues/18))
+
 ### Changed
 
+- `RedisTaskBackend.run_task()` takes `from_statuses` and returns `None`
+  instead of a `TaskResult` when the task is not in one of them. A caller
+  that used it directly on a task it had already moved to RUNNING now gets
+  `None`; let `run_task()` do the claim instead.
 - `run_redis_tasks` receives from the broker and acknowledges each message
   after the task ran, the way `run_database_tasks` does against a pull
   broker. Its options and output are unchanged.
