@@ -4,5 +4,5 @@ django-tasks-redis: A Redis/Valkey-backed task queue backend for Django 6.0's ta
 
 from .backends import RedisTaskBackend
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __all__ = ["RedisTaskBackend"]
