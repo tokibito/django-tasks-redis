@@ -212,6 +212,27 @@ class TestReceive:
         assert messages == []
         assert time.monotonic() - started >= 0.1
 
+    def test_waiting_receive_ends_when_a_shutdown_is_requested(
+        self, redis_backend, clean_redis
+    ):
+        """XREADGROUP cannot be interrupted, so the wait is taken in steps."""
+        import threading
+
+        from django_tasks_redis import GracefulShutdown
+
+        with GracefulShutdown() as shutdown:
+            timer = threading.Timer(0.2, shutdown.set)
+            timer.daemon = True
+            timer.start()
+            started = time.monotonic()
+
+            messages = redis_backend.broker.receive(wait_seconds=30, worker_id=WORKER)
+
+        elapsed = time.monotonic() - started
+        assert messages == []
+        # One step of the wait at most, not the 30 seconds asked for.
+        assert elapsed < 2
+
     def test_waiting_receive_returns_queued_work(self, redis_backend, clean_redis):
         from tests.tasks import simple_task
 

@@ -9,11 +9,13 @@ consumer left pending.
 """
 
 import logging
+from time import monotonic
 
 import redis
 from django.tasks.base import TaskResultStatus
 from django.utils import timezone
 
+from ..shutdown import is_shutdown_requested
 from ..utils import (
     deserialize_datetime,
     deserialize_json,
@@ -33,6 +35,13 @@ PRIORITY_LEVELS = ["high", "normal", "low"]
 
 #: Pending entries read per XPENDING page while sweeping for stale messages.
 PENDING_PAGE_SIZE = 100
+
+#: How long a single blocking read lasts before the wait looks at the shutdown
+#: flag again, in seconds. XREADGROUP cannot be interrupted from Python: a
+#: signal handler runs, and the read carries on until its block is up. A wait
+#: longer than this is split into chunks, so a worker asked to stop does not
+#: sit in the read until the whole wait is over.
+WAIT_CHUNK_SECONDS = 1.0
 
 #: A worker runs one task at a time, so claiming a whole backlog would park it
 #: behind one consumer instead of spreading recovery over the live workers.
@@ -233,7 +242,9 @@ class RedisStreamsBroker(PullBroker):
                 waits on all streams at once, so a message that arrives on a
                 lower priority stream at the same moment as one on a higher
                 priority stream may be served first; strict priority still
-                holds for messages already queued.
+                holds for messages already queued. The wait ends early when
+                the active :class:`~django_tasks_redis.GracefulShutdown` is
+                asked to stop.
             worker_id: The consumer to read as. It has to be the id the
                 worker keeps using, or what it holds is never served again.
 
@@ -272,10 +283,18 @@ class RedisStreamsBroker(PullBroker):
         if messages or not wait_seconds or wait_seconds <= 0:
             return messages
 
-        block = max(1, int(wait_seconds * 1000))
-        delivered = self._read(stream_keys, worker_id, ">", max_messages, block=block)
-        self._take(delivered, stream_keys, messages, max_messages)
-        return messages
+        deadline = monotonic() + wait_seconds
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0 or is_shutdown_requested():
+                return messages
+            block = max(1, int(min(remaining, WAIT_CHUNK_SECONDS) * 1000))
+            delivered = self._read(
+                stream_keys, worker_id, ">", max_messages, block=block
+            )
+            self._take(delivered, stream_keys, messages, max_messages)
+            if messages:
+                return messages
 
     def _read(self, stream_keys, worker_id, read_id, count, block=None):
         """

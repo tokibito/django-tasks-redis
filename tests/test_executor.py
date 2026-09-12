@@ -223,3 +223,40 @@ class TestExecutor:
         deleted = executor.purge_completed_tasks(days=7)
 
         assert deleted == 1
+
+
+@pytest.mark.django_db
+class TestProcessTasksStopEvent:
+    def test_set_stop_event_starts_nothing(self, clean_redis):
+        import threading
+
+        from tests.tasks import simple_task
+
+        result = simple_task.enqueue(1, 2)
+        stop_event = threading.Event()
+        stop_event.set()
+
+        assert executor.process_tasks(stop_event=stop_event) == []
+        assert executor.get_task_by_id(result.id)["status"] == TaskResultStatus.READY
+
+    def test_unset_stop_event_does_not_stop_processing(self, clean_redis):
+        import threading
+
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        simple_task.enqueue(3, 4)
+
+        results = executor.process_tasks(stop_event=threading.Event())
+
+        assert len(results) == 2
+
+    def test_graceful_shutdown_is_a_stop_event(self, clean_redis):
+        from django_tasks_redis import GracefulShutdown
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        shutdown = GracefulShutdown()
+        shutdown.set()
+
+        assert executor.process_tasks(stop_event=shutdown) == []
