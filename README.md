@@ -59,6 +59,7 @@ sequenceDiagram
     Worker->>Redis: XPENDING + XCLAIM stale messages<br/>(claim_timeout exceeded)
     Redis-->>Worker: Messages reassigned to this consumer
     Worker->>Worker: Re-execute tasks<br/>(up to REDIS_MAX_DELIVERIES)
+    Worker->>Redis: XGROUP DELCONSUMER idle consumers<br/>that hold nothing
 
     Note over App,Worker: Result Retrieval (Optional)
     App->>Backend: backend.get_result(task_id)
@@ -374,7 +375,8 @@ for message in broker.receive(
 | `receive(queue_name=None, max_messages=1, wait_seconds=0, worker_id=None)` | `XREADGROUP` as the consumer `worker_id`: the messages it already holds first, then new ones in priority order. Messages whose task is no longer `READY`, or whose task is gone, are acknowledged inside the call and not returned |
 | `ack(message)` | `XACK` and `XDEL`. Until it is called the message stays pending for the consumer |
 | `nack(message)` | Nothing. A pending entry is what a stream has instead of redelivery: the same consumer is served it again, or another worker takes it over once it has been idle for `REDIS_CLAIM_TIMEOUT` |
-| `claim_stale_messages(worker_id, claim_timeout=None, max_deliveries=None)` | `XPENDING` and `XCLAIM`: take over what a dead consumer left, hand a task it left `RUNNING` back as `READY`, and give up on one started `REDIS_MAX_DELIVERIES` times |
+| `claim_stale_messages(worker_id, claim_timeout=None, max_deliveries=None)` | `XPENDING` and `XCLAIM`: take over what a dead consumer left, hand a task it left `RUNNING` back as `READY`, and give up on one started `REDIS_MAX_DELIVERIES` times. Consumers idle for the timeout that hold nothing are removed from the group |
+| `remove_consumer(worker_id)` | `XGROUP DELCONSUMER` on every stream, for a worker on its way out. A consumer that still holds pending messages is kept for the sweep |
 
 `worker_id` is the consumer name in the group, so it has to be the id the
 worker keeps using: a message received as one consumer is only served again

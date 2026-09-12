@@ -27,6 +27,16 @@
   READY and moves on to the next one; `run_task_by_id()` uses the same claim
   instead of one of its own.
   ([#18](https://github.com/tokibito/django-tasks-redis/issues/18))
+- **Dead consumers are removed from the consumer group.** Every
+  `run_redis_tasks` start added a consumer named after its worker id, and
+  nothing ever ran `XGROUP DELCONSUMER`, so the group grew by one entry per
+  worker start and `XINFO CONSUMERS` got less useful over time. A worker now
+  removes its own consumer when it exits, and the stale-message sweep removes
+  any consumer that has been idle for `REDIS_CLAIM_TIMEOUT` and holds no
+  pending message, the sweeping worker's own excepted. A consumer that still
+  holds messages is kept until the sweep has reclaimed them, since deleting it
+  would lose them.
+  ([#19](https://github.com/tokibito/django-tasks-redis/issues/19))
 
 ### Changed
 
