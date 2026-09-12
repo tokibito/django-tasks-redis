@@ -271,11 +271,31 @@ class TestConnectionOptions:
         assert kwargs["socket_connect_timeout"] == 5
 
     @mock.patch("django_tasks_redis.utils.redis")
-    def test_socket_timeout_stays_unset(self, mock_redis):
-        """It applies to blocking reads, so it cannot have a default."""
+    def test_socket_timeout_is_unbounded_by_default(self, mock_redis):
+        """It applies to blocking reads, so it cannot be left to redis-py.
+
+        redis-py 8 defaults socket_timeout to 5 seconds, the length of the
+        default XREADGROUP block, and cuts every idle wait short. None has to
+        reach redis-py explicitly.
+        """
         get_redis_client({"REDIS_URL": "redis://localhost:6379/0"})
         _, kwargs = mock_redis.Redis.from_url.call_args
-        assert "socket_timeout" not in kwargs
+        assert "socket_timeout" in kwargs
+        assert kwargs["socket_timeout"] is None
+
+        get_redis_client({"REDIS_HOST": "localhost"})
+        _, kwargs = mock_redis.Redis.call_args
+        assert "socket_timeout" in kwargs
+        assert kwargs["socket_timeout"] is None
+
+    @mock.patch("django_tasks_redis.utils.redis")
+    def test_socket_timeout_none_is_passed_through(self, mock_redis):
+        """An explicit None means no bound, not redis-py's default."""
+        get_redis_client(
+            {"REDIS_URL": "redis://localhost:6379/0", "REDIS_SOCKET_TIMEOUT": None}
+        )
+        _, kwargs = mock_redis.Redis.from_url.call_args
+        assert kwargs["socket_timeout"] is None
 
     @mock.patch("django_tasks_redis.utils.redis")
     def test_connection_is_bounded_by_default(self, mock_redis):

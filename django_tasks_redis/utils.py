@@ -15,8 +15,8 @@ logger = logging.getLogger("django_tasks_redis")
 
 # Without any of these, a half-open connection - a Redis restart, a network
 # partition - blocks a worker for as long as the kernel allows. REDIS_SOCKET_TIMEOUT
-# stays unset: it covers blocking reads too, so anything below REDIS_BLOCK_TIMEOUT
-# makes every fetch raise.
+# has no bound by default: it covers blocking reads too, so anything below
+# REDIS_BLOCK_TIMEOUT makes every fetch raise.
 CONNECTION_OPTIONS = {
     "REDIS_SOCKET_TIMEOUT": ("socket_timeout", None),
     "REDIS_SOCKET_CONNECT_TIMEOUT": ("socket_connect_timeout", 5),
@@ -24,12 +24,18 @@ CONNECTION_OPTIONS = {
     "REDIS_HEALTH_CHECK_INTERVAL": ("health_check_interval", 30),
 }
 
+# Options passed to redis-py even when they are None. For the others None means
+# "let redis-py decide", but redis-py 8 decides on a 5 second socket_timeout,
+# the same length as the worker's default XREADGROUP block: the read is cut off
+# the moment the block would have returned, and every idle wait raises.
+UNBOUNDED_WHEN_NONE = frozenset({"REDIS_SOCKET_TIMEOUT"})
+
 
 def get_connection_options(options: dict) -> dict:
     resolved = {}
     for option, (kwarg, default) in CONNECTION_OPTIONS.items():
         value = options.get(option, default)
-        if value is not None:
+        if value is not None or option in UNBOUNDED_WHEN_NONE:
             resolved[kwarg] = value
     return resolved
 

@@ -175,11 +175,14 @@ idle while it does. `REDIS_SOCKET_CONNECT_TIMEOUT` bounds establishing a
 connection and `REDIS_HEALTH_CHECK_INTERVAL` makes redis-py check an idle one
 before reusing it.
 
-`REDIS_SOCKET_TIMEOUT` is left unset on purpose: it also applies to the worker's
-blocking reads, so a value below `REDIS_BLOCK_TIMEOUT` makes every fetch raise
-`TimeoutError`. Set it above that, in seconds, or leave it alone.
+`REDIS_SOCKET_TIMEOUT` has no bound by default, on purpose: it also applies to
+the worker's blocking reads, so a value at or below `REDIS_BLOCK_TIMEOUT` makes
+every idle wait raise `TimeoutError`. Set it above that, in seconds, or leave it
+alone; the backend logs a warning at startup when the two do not fit. It is
+passed to redis-py as `None` rather than left out, because redis-py 8 otherwise
+applies a 5 second default of its own, the same length as the default block.
 
-Setting any of these options to `None` drops the default and lets redis-py
+Setting any of the other options to `None` drops the default and lets redis-py
 apply its own — useful when the value above is wrong for your environment.
 
 Note that redis-py's default `Retry` multiplies the connect timeout. With
