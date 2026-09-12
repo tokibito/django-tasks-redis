@@ -165,3 +165,44 @@ class TestRedisTaskBackend:
         # Verify it's ready again
         task_data = redis_backend.get_task_data(task_id)
         assert task_data["status"] == TaskResultStatus.READY
+
+
+@pytest.mark.django_db
+class TestSocketTimeout:
+    """The socket timeout has to leave room for the worker's blocking read."""
+
+    def build(self, **options):
+        from django.conf import settings
+
+        from django_tasks_redis.backends import RedisTaskBackend
+
+        return RedisTaskBackend(
+            "timeouts", {"QUEUES": [], "OPTIONS": {**settings.REDIS_OPTIONS, **options}}
+        )
+
+    def test_connection_has_no_read_timeout_by_default(self, redis_backend):
+        """redis-py's own default is 5 seconds, the length of the block."""
+        kwargs = redis_backend.get_client().connection_pool.connection_kwargs
+
+        assert "socket_timeout" in kwargs
+        assert kwargs["socket_timeout"] is None
+
+    def test_timeout_below_the_block_is_reported(self, caplog):
+        with caplog.at_level("WARNING", logger="django_tasks_redis"):
+            self.build(REDIS_SOCKET_TIMEOUT=5, REDIS_BLOCK_TIMEOUT=5000)
+
+        assert "REDIS_SOCKET_TIMEOUT (5s) does not exceed" in caplog.text
+        assert "'timeouts'" in caplog.text
+
+    def test_timeout_above_the_block_is_fine(self, caplog):
+        with caplog.at_level("WARNING", logger="django_tasks_redis"):
+            self.build(REDIS_SOCKET_TIMEOUT=6, REDIS_BLOCK_TIMEOUT=5000)
+
+        assert caplog.text == ""
+
+    def test_no_block_means_no_constraint(self, caplog):
+        """With blocking reads off, the socket timeout only bounds plain reads."""
+        with caplog.at_level("WARNING", logger="django_tasks_redis"):
+            self.build(REDIS_SOCKET_TIMEOUT=1, REDIS_BLOCK_TIMEOUT=0)
+
+        assert caplog.text == ""

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **An idle continuous worker raised `TimeoutError` every
+  `REDIS_BLOCK_TIMEOUT` on redis-py 8.** `REDIS_SOCKET_TIMEOUT` was left out
+  of the connection arguments when unset so that redis-py would apply its own
+  default, which was no timeout up to redis-py 7. redis-py 8 defaults it to 5
+  seconds, the length of the default `XREADGROUP` block, so the socket gave
+  up the moment the block would have returned and `run_redis_tasks
+  --continuous` logged a traceback and `Failed to process a task` on every
+  idle wait. Tasks still ran. The socket timeout is now passed as `None`
+  unless configured, and a configured value at or below `REDIS_BLOCK_TIMEOUT`
+  is reported with a warning when the backend starts.
+  ([#27](https://github.com/tokibito/django-tasks-redis/issues/27))
+
 ## 0.2.0
 
 **The HTTP task endpoints are closed by default.** A project that uses them

@@ -73,10 +73,34 @@ class RedisTaskBackend(BaseTaskBackend):
         )
         self.claim_timeout = self.options.get("REDIS_CLAIM_TIMEOUT", 300)
         self.block_timeout = self.options.get("REDIS_BLOCK_TIMEOUT", 5000)
+        self._check_socket_timeout()
         # Without a cap, a task that can never finish is started again
         # forever. Counts starts, not deliveries. 0 disables it.
         self.max_deliveries = self.options.get("REDIS_MAX_DELIVERIES", 5)
         self.scan_batch_size = self.options.get("REDIS_SCAN_BATCH_SIZE", 500)
+
+    def _check_socket_timeout(self):
+        """
+        Warn about a socket timeout the worker's blocking read cannot fit in.
+
+        The read timeout covers XREADGROUP ... BLOCK too, so a socket timeout
+        at or below the block makes every idle wait of a worker raise
+        TimeoutError. A warning rather than an error: a process that only
+        enqueues is unaffected, and must keep starting.
+        """
+        socket_timeout = self.options.get("REDIS_SOCKET_TIMEOUT")
+        if socket_timeout is None or not self.block_timeout:
+            return
+        if socket_timeout * 1000 <= self.block_timeout:
+            logger.warning(
+                "REDIS_SOCKET_TIMEOUT (%ss) does not exceed REDIS_BLOCK_TIMEOUT "
+                "(%sms) on the %r task backend: every blocking read of a worker "
+                "will raise TimeoutError. Raise the socket timeout above the "
+                "block, or leave it unset.",
+                socket_timeout,
+                self.block_timeout,
+                self.alias,
+            )
 
     def get_client(self):
         """Get or create Redis client."""
