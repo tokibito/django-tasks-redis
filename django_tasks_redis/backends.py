@@ -16,6 +16,7 @@ from django.tasks.signals import task_enqueued, task_finished, task_started
 from django.utils import timezone
 from django.utils.json import normalize_json
 
+from .exceptions import TaskAbandoned
 from .utils import (
     deserialize_datetime,
     deserialize_json,
@@ -30,6 +31,22 @@ from .utils import (
 )
 
 logger = logging.getLogger("django_tasks_redis")
+
+# Read and write in one step, or two callers both see an executable task and
+# both run it.
+_TRANSITION_TASK_STATUS = """
+local status = redis.call('HGET', KEYS[1], 'status')
+if status == false then
+    return 0
+end
+for i = 2, #ARGV do
+    if status == ARGV[i] then
+        redis.call('HSET', KEYS[1], 'status', ARGV[1])
+        return 1
+    end
+end
+return 0
+"""
 
 
 class RedisTaskBackend(BaseTaskBackend):
@@ -56,6 +73,10 @@ class RedisTaskBackend(BaseTaskBackend):
         )
         self.claim_timeout = self.options.get("REDIS_CLAIM_TIMEOUT", 300)
         self.block_timeout = self.options.get("REDIS_BLOCK_TIMEOUT", 5000)
+        # Without a cap, a task that can never run is redelivered forever.
+        # 0 disables it.
+        self.max_deliveries = self.options.get("REDIS_MAX_DELIVERIES", 5)
+        self.scan_batch_size = self.options.get("REDIS_SCAN_BATCH_SIZE", 500)
 
     def get_client(self):
         """Get or create Redis client."""
@@ -67,10 +88,15 @@ class RedisTaskBackend(BaseTaskBackend):
         """
         Get the authentication handler for task execution endpoints.
 
-        Subclasses can override this to provide custom authentication.
-        The handler should be a callable that takes a request and returns:
+        Subclasses must override this to open the HTTP endpoints in
+        ``django_tasks_redis.urls``. The handler is a callable that takes a
+        request and returns:
         - None if authentication succeeds
-        - A JsonResponse with error details if authentication fails
+        - An HttpResponse with error details if authentication fails
+
+        Returning None (the default) keeps the endpoints closed: they run and
+        delete tasks, so they cannot be reachable without the project having
+        said how to authenticate them.
 
         Returns:
             Callable or None
@@ -117,14 +143,6 @@ class RedisTaskBackend(BaseTaskBackend):
         result_key = get_result_key(self.key_prefix, self.alias, task_id)
         results_index_key = get_results_index_key(self.key_prefix, self.alias)
 
-        # Store task result in Hash
-        client.hset(result_key, mapping=task_data)
-        if self.result_ttl > 0:
-            client.expire(result_key, self.result_ttl)
-
-        # Add to results index for iteration
-        client.sadd(results_index_key, task_id)
-
         # Prepare stream entry data (subset for queue)
         stream_data = {
             "task_id": task_id,
@@ -134,19 +152,40 @@ class RedisTaskBackend(BaseTaskBackend):
             "enqueued_at": task_data["enqueued_at"],
         }
 
-        # Add to stream or delayed set based on run_after
-        if task.run_after is not None and task.run_after > now:
-            # Add to delayed sorted set
-            delayed_key = get_delayed_key(self.key_prefix, self.alias, task.queue_name)
-            client.zadd(delayed_key, {task_id: task.run_after.timestamp()})
-        else:
-            # Add to priority-based stream
+        is_delayed = task.run_after is not None and task.run_after > now
+        if not is_delayed:
             priority_level = priority_to_level(task.priority)
             stream_key = get_priority_stream_key(
                 self.key_prefix, self.alias, task.queue_name, priority_level
             )
+            # Outside the transaction below: idempotent, and XADD needs it first.
             self._ensure_consumer_group(client, stream_key)
-            client.xadd(stream_key, stream_data)
+
+        # One transaction: a task stored and indexed but never queued would
+        # never run, and nothing would report it.
+        pipeline = client.pipeline()
+
+        # Store task result in Hash
+        pipeline.hset(result_key, mapping=task_data)
+        if self.result_ttl > 0:
+            result_ttl = self.result_ttl
+            if is_delayed:
+                # A result that expires before its task is due loses the task.
+                result_ttl += int((task.run_after - now).total_seconds())
+            pipeline.expire(result_key, result_ttl)
+
+        # Add to results index for iteration
+        pipeline.sadd(results_index_key, task_id)
+
+        if is_delayed:
+            # Add to delayed sorted set
+            delayed_key = get_delayed_key(self.key_prefix, self.alias, task.queue_name)
+            pipeline.zadd(delayed_key, {task_id: task.run_after.timestamp()})
+        else:
+            # Add to priority-based stream
+            pipeline.xadd(stream_key, stream_data)
+
+        pipeline.execute()
 
         task_result = self._data_to_result(task_data, task)
         task_enqueued.send(sender=self.__class__, task_result=task_result)
@@ -264,14 +303,28 @@ class RedisTaskBackend(BaseTaskBackend):
             },
         )
 
-        task = self._resolve_task(task_data["task_path"])
-        task_data["status"] = TaskResultStatus.RUNNING
-        task_data["started_at"] = started_at
-        task_data["last_attempted_at"] = serialize_datetime(now)
-        task_data["worker_ids_json"] = serialize_json(worker_ids)
+        # Past the RUNNING write but before the block that records failures, so
+        # an error here would leave the task RUNNING with nothing to explain it.
+        try:
+            task = self._resolve_task(task_data["task_path"])
+            task_data["status"] = TaskResultStatus.RUNNING
+            task_data["started_at"] = started_at
+            task_data["last_attempted_at"] = serialize_datetime(now)
+            task_data["worker_ids_json"] = serialize_json(worker_ids)
 
-        task_result = self._data_to_result(task_data, task)
-        task_started.send(sender=self.__class__, task_result=task_result)
+            task_result = self._data_to_result(task_data, task)
+            task_started.send(sender=self.__class__, task_result=task_result)
+        except Exception as e:
+            self._record_error(
+                result_key,
+                task_data,
+                TaskError(
+                    exception_class_path=f"{type(e).__module__}.{type(e).__qualname__}",
+                    traceback=traceback.format_exc(),
+                ),
+            )
+            logger.exception("Task could not be started: id=%s", task_id)
+            raise
 
         try:
             # Get task function
@@ -334,27 +387,7 @@ class RedisTaskBackend(BaseTaskBackend):
                 exception_class_path=f"{type(e).__module__}.{type(e).__qualname__}",
                 traceback=traceback.format_exc(),
             )
-            errors = deserialize_json(task_data.get("errors_json", "[]")) or []
-            errors.append(
-                {
-                    "exception_class_path": error.exception_class_path,
-                    "traceback": error.traceback,
-                }
-            )
-
-            finished_at = serialize_datetime(timezone.now())
-            client.hset(
-                result_key,
-                mapping={
-                    "status": TaskResultStatus.FAILED,
-                    "errors_json": serialize_json(errors),
-                    "finished_at": finished_at,
-                },
-            )
-
-            # Set TTL for completed task
-            if self.completed_task_ttl > 0:
-                client.expire(result_key, self.completed_task_ttl)
+            self._record_error(result_key, task_data, error)
 
             # Refresh and return result
             task_data = client.hgetall(result_key)
@@ -367,6 +400,153 @@ class RedisTaskBackend(BaseTaskBackend):
             )
             task_finished.send(sender=self.__class__, task_result=final_result)
             return final_result
+
+    def _record_error(self, result_key, task_data, error):
+        """
+        Persist a terminal FAILED state with `error` appended to the task.
+
+        Args:
+            result_key: Redis key of the task hash.
+            task_data: Task data read before the failure.
+            error: TaskError to append.
+        """
+        client = self.get_client()
+
+        errors = deserialize_json(task_data.get("errors_json", "[]")) or []
+        errors.append(
+            {
+                "exception_class_path": error.exception_class_path,
+                "traceback": error.traceback,
+            }
+        )
+
+        client.hset(
+            result_key,
+            mapping={
+                "status": TaskResultStatus.FAILED,
+                "errors_json": serialize_json(errors),
+                "finished_at": serialize_datetime(timezone.now()),
+            },
+        )
+
+        # Set TTL for completed task
+        if self.completed_task_ttl > 0:
+            client.expire(result_key, self.completed_task_ttl)
+
+    def transition_task_status(self, task_id, to_status, from_statuses):
+        """
+        Move a task to `to_status`, but only from one of `from_statuses`.
+
+        The check and the write happen in one step, so two callers racing to
+        start the same task cannot both win.
+
+        Args:
+            task_id: Task ID string.
+            to_status: Status to move the task to.
+            from_statuses: Statuses the task may be moved from.
+
+        Returns:
+            True if this caller made the transition.
+        """
+        client = self.get_client()
+        transition = client.register_script(_TRANSITION_TASK_STATUS)
+
+        return bool(
+            transition(
+                keys=[get_result_key(self.key_prefix, self.alias, task_id)],
+                args=[to_status, *from_statuses],
+            )
+        )
+
+    def mark_task_failed(self, task_id, reason):
+        """
+        Record a task as FAILED without running it.
+
+        Used when the queue gives up on a task, so an operator sees a failed
+        task with a reason instead of one stuck in READY or RUNNING forever.
+
+        No task_finished signal is sent: resolving the task object is itself a
+        reason a task gets abandoned, and TaskResult cannot be built without it.
+
+        Args:
+            task_id: Task ID string.
+            reason: Human-readable explanation, stored as the error traceback.
+
+        Returns:
+            True if recorded, False if the task no longer exists.
+        """
+        client = self.get_client()
+        result_key = get_result_key(self.key_prefix, self.alias, task_id)
+
+        task_data = client.hgetall(result_key)
+        if not task_data:
+            return False
+
+        self._record_error(
+            result_key,
+            task_data,
+            TaskError(
+                exception_class_path=(
+                    f"{TaskAbandoned.__module__}.{TaskAbandoned.__qualname__}"
+                ),
+                traceback=reason,
+            ),
+        )
+        logger.error(
+            "Task abandoned: id=%s path=%s reason=%s",
+            task_id,
+            task_data.get("task_path", ""),
+            reason,
+        )
+        return True
+
+    def iter_task_data(self, batch_size=None, cleanup=True):
+        """
+        Yield (task_id, task_data) for every task in the results index.
+
+        The index holds one member per task, so reading it one HGETALL at a time
+        costs a round trip per task and materialises the whole index in memory.
+        This walks it with SSCAN and fetches each batch in a single pipeline.
+
+        Args:
+            batch_size: Tasks per pipelined round trip. If None, uses the
+                backend setting.
+            cleanup: Drop index members whose task hash has expired.
+
+        Yields:
+            Tuples of (task_id, task data dict).
+        """
+        client = self.get_client()
+        results_index_key = get_results_index_key(self.key_prefix, self.alias)
+        batch_size = batch_size or self.scan_batch_size
+
+        batch = []
+        for task_id in client.sscan_iter(results_index_key, count=batch_size):
+            batch.append(task_id)
+            if len(batch) >= batch_size:
+                yield from self._fetch_task_batch(results_index_key, batch, cleanup)
+                batch = []
+
+        if batch:
+            yield from self._fetch_task_batch(results_index_key, batch, cleanup)
+
+    def _fetch_task_batch(self, results_index_key, task_ids, cleanup):
+        """Fetch one batch of task hashes and drop index members that expired."""
+        client = self.get_client()
+
+        pipeline = client.pipeline(transaction=False)
+        for task_id in task_ids:
+            pipeline.hgetall(get_result_key(self.key_prefix, self.alias, task_id))
+
+        expired = []
+        for task_id, task_data in zip(task_ids, pipeline.execute(), strict=True):
+            if task_data:
+                yield task_id, task_data
+            else:
+                expired.append(task_id)
+
+        if cleanup and expired:
+            client.srem(results_index_key, *expired)
 
     def get_all_tasks(
         self,
@@ -387,23 +567,9 @@ class RedisTaskBackend(BaseTaskBackend):
         Returns:
             Tuple of (list of task dicts, total count).
         """
-        client = self.get_client()
-        results_index_key = get_results_index_key(self.key_prefix, self.alias)
-
-        # Get all task IDs from index
-        task_ids = client.smembers(results_index_key)
-
         # Fetch all task data and filter
         tasks = []
-        for task_id in task_ids:
-            result_key = get_result_key(self.key_prefix, self.alias, task_id)
-            task_data = client.hgetall(result_key)
-
-            if not task_data:
-                # Task expired, remove from index
-                client.srem(results_index_key, task_id)
-                continue
-
+        for _task_id, task_data in self.iter_task_data():
             # Apply filters
             if queue_name and task_data.get("queue_name") != queue_name:
                 continue
@@ -512,11 +678,6 @@ class RedisTaskBackend(BaseTaskBackend):
         Returns:
             Dict mapping status to count.
         """
-        client = self.get_client()
-        results_index_key = get_results_index_key(self.key_prefix, self.alias)
-
-        task_ids = client.smembers(results_index_key)
-
         counts = {
             TaskResultStatus.READY: 0,
             TaskResultStatus.RUNNING: 0,
@@ -524,14 +685,7 @@ class RedisTaskBackend(BaseTaskBackend):
             TaskResultStatus.FAILED: 0,
         }
 
-        for task_id in task_ids:
-            result_key = get_result_key(self.key_prefix, self.alias, task_id)
-            task_data = client.hgetall(result_key)
-
-            if not task_data:
-                client.srem(results_index_key, task_id)
-                continue
-
+        for _task_id, task_data in self.iter_task_data():
             if queue_name and task_data.get("queue_name") != queue_name:
                 continue
 
