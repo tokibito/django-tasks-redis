@@ -36,7 +36,14 @@ venv/bin/pytest
 
 Tests use pytest-django with the settings in `tests/settings.py`: an
 in-memory SQLite database for the admin and auth tables, and the Redis
-server on `localhost:6379`, database 0. **There is no mock.** Every test that
+server on `localhost:6379`, database 0. Set `REDIS_URL` to run the suite
+against another server, such as a throwaway container on a spare port:
+
+```bash
+REDIS_URL=redis://localhost:6399/0 venv/bin/pytest
+```
+
+**There is no mock.** Every test that
 touches a task goes through a real server, because streams, consumer groups,
 pending-entry claiming and key expiry are what the backend is made of, and a
 stand-in would only prove that the stand-in works.
