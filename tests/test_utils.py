@@ -287,16 +287,16 @@ class TestConnectionOptions:
 
     @mock.patch("django_tasks_redis.utils.redis")
     def test_defaults_can_be_turned_off(self, mock_redis):
-        """0 is a real value, not a missing one."""
+        """None drops the kwarg; health_check_interval=0 still disables the check."""
         get_redis_client(
             {
                 "REDIS_URL": "redis://localhost:6379/0",
-                "REDIS_SOCKET_CONNECT_TIMEOUT": 0,
+                "REDIS_SOCKET_CONNECT_TIMEOUT": None,
                 "REDIS_HEALTH_CHECK_INTERVAL": 0,
             }
         )
         _, kwargs = mock_redis.Redis.from_url.call_args
-        assert kwargs["socket_connect_timeout"] == 0
+        assert "socket_connect_timeout" not in kwargs
         assert kwargs["health_check_interval"] == 0
 
 

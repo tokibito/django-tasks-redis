@@ -171,6 +171,14 @@ before reusing it.
 blocking reads, so a value below `REDIS_BLOCK_TIMEOUT` makes every fetch raise
 `TimeoutError`. Set it above that, in seconds, or leave it alone.
 
+Setting any of these options to `None` drops the default and lets redis-py
+apply its own — useful when the value above is wrong for your environment.
+
+Note that redis-py's default `Retry` multiplies the connect timeout. With
+`REDIS_SOCKET_CONNECT_TIMEOUT=2` against an unroutable host, the default retry
+policy in redis-py 8.x stretches a 2.0 s wait to roughly 25 s, so the actual
+wait can be much longer than the configured value.
+
 ## Management Commands
 
 ### run_redis_tasks
