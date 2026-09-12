@@ -120,23 +120,28 @@ def process_one_task(
     backend = task_backends[backend_name]
     broker = backend.broker
 
-    messages = broker.receive(
-        queue_name=queue_name,
-        max_messages=1,
-        wait_seconds=_wait_seconds(block),
-        worker_id=worker_id,
-    )
-    if not messages:
-        return None
+    while True:
+        messages = broker.receive(
+            queue_name=queue_name,
+            max_messages=1,
+            wait_seconds=_wait_seconds(block),
+            worker_id=worker_id,
+        )
+        if not messages:
+            return None
 
-    message = messages[0]
+        message = messages[0]
 
-    # An exception leaves the message pending on purpose: claim_stale_tasks
-    # hands it out again, bounded by REDIS_MAX_DELIVERIES.
-    result = backend.run_task(message.task_id, worker_id=worker_id)
+        # An exception leaves the message pending on purpose: claim_stale_tasks
+        # hands it out again, bounded by REDIS_MAX_DELIVERIES.
+        result = backend.run_task(message.task_id, worker_id=worker_id)
 
-    broker.ack(message)
-    return result
+        broker.ack(message)
+        if result is not None:
+            return result
+        # Someone else claimed the task between the read and here - an external
+        # trigger, say. Its message is done with; this worker is not, so it
+        # looks for the next one rather than reporting an empty queue.
 
 
 def process_tasks(
@@ -222,7 +227,9 @@ def run_task_by_id(task_id, backend_name="default", worker_id=None, allow_retry=
     to also execute FAILED tasks (useful for retry mechanisms).
 
     The task is claimed atomically, so a trigger delivered more than once - the
-    normal guarantee of the systems this is meant for - only runs the task once.
+    normal guarantee of the systems this is meant for - only runs the task once,
+    and a worker that has read the task's message at the same moment does not
+    run it a second time either.
 
     Args:
         task_id: UUID or string ID of the task to execute.
@@ -252,24 +259,14 @@ def run_task_by_id(task_id, backend_name="default", worker_id=None, allow_retry=
     if worker_id is None:
         worker_id = generate_worker_id()
 
-    backend = task_backends[backend_name]
-    task_data = backend.get_task_data(str(task_id))
-
-    if task_data is None:
-        from django.tasks.exceptions import TaskResultDoesNotExist
-
-        raise TaskResultDoesNotExist(task_id)
-
     allowed_statuses = [TaskResultStatus.READY]
     if allow_retry:
         allowed_statuses.append(TaskResultStatus.FAILED)
 
-    if not backend.transition_task_status(
-        str(task_id), TaskResultStatus.RUNNING, allowed_statuses
-    ):
-        return None
-
-    return backend.run_task(str(task_id), worker_id=worker_id)
+    backend = task_backends[backend_name]
+    return backend.run_task(
+        str(task_id), worker_id=worker_id, from_statuses=allowed_statuses
+    )
 
 
 def claim_stale_tasks(

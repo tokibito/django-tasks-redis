@@ -46,7 +46,7 @@ sequenceDiagram
     Redis-->>Worker: Message with task_id
     Worker->>Redis: HGET task data
     Redis-->>Worker: Task data
-    Worker->>Redis: HSET status=RUNNING
+    Worker->>Redis: Claim: status READY→RUNNING<br/>(one script; a lost claim is acknowledged and skipped)
     Worker->>Worker: Execute task function
     alt Success
         Worker->>Redis: HSET status=SUCCESSFUL,<br/>return_value, finished_at

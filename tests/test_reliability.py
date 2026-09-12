@@ -547,3 +547,126 @@ class TestRunAfterConstraint:
         )
 
         assert ttl > delay
+
+
+@pytest.mark.django_db
+class TestWorkerClaim:
+    """A worker that has read a message must not run a task someone else took."""
+
+    def run_elsewhere_after_receive(self, backend, task_id):
+        """Make the broker run the task, as an external trigger would, after
+        handing the worker its message and before the worker runs it."""
+        broker = backend.broker
+        original_receive = broker.receive
+
+        def receive_then_lose_the_race(*args, **kwargs):
+            messages = original_receive(*args, **kwargs)
+            broker.receive = original_receive
+            if messages:
+                executor.run_task_by_id(task_id, worker_id="external-trigger")
+            return messages
+
+        broker.receive = receive_then_lose_the_race
+
+    def test_task_claimed_by_a_trigger_after_the_read_runs_once(
+        self, redis_backend, clean_redis
+    ):
+        from tests.tasks import simple_task
+
+        client = redis_backend.get_client()
+        stream_key = normal_stream_key(redis_backend)
+        result = simple_task.enqueue(1, 2)
+        self.run_elsewhere_after_receive(redis_backend, result.id)
+
+        assert executor.process_one_task(worker_id=LIVE_WORKER) is None
+
+        task_data = executor.get_task_by_id(result.id)
+        assert task_data["status"] == TaskResultStatus.SUCCESSFUL
+        assert json.loads(task_data["worker_ids_json"]) == ["external-trigger"]
+        # The message is done with, like any other for a task no longer READY.
+        assert client.xpending(stream_key, redis_backend.consumer_group)["pending"] == 0
+        assert client.xlen(stream_key) == 0
+
+    def test_worker_moves_on_to_the_next_task_after_a_lost_claim(
+        self, redis_backend, clean_redis
+    ):
+        from tests.tasks import simple_task
+
+        first = simple_task.enqueue(1, 2)
+        second = simple_task.enqueue(3, 4)
+        self.run_elsewhere_after_receive(redis_backend, first.id)
+
+        result = executor.process_one_task(worker_id=LIVE_WORKER)
+
+        assert result is not None
+        assert result.id == second.id
+        assert result.return_value == 7
+
+    def test_command_reports_a_lost_claim_and_carries_on(
+        self, redis_backend, clean_redis
+    ):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from tests.tasks import simple_task
+
+        first = simple_task.enqueue(1, 2)
+        simple_task.enqueue(3, 4)
+        self.run_elsewhere_after_receive(redis_backend, first.id)
+
+        out = StringIO()
+        call_command("run_redis_tasks", stdout=out)
+
+        output = out.getvalue()
+        assert f"Task {first.id[:8]} is not ready to run" in output
+        assert "Processed 1 task(s)" in output
+
+    def test_run_task_claims_in_one_step(self, redis_backend, clean_redis):
+        """Only the caller that moves the task to RUNNING gets to run it."""
+        from tests.tasks import simple_task
+
+        result = simple_task.enqueue(1, 2)
+        set_task_fields(
+            redis_backend, result.id, mapping={"status": TaskResultStatus.RUNNING}
+        )
+
+        assert redis_backend.run_task(result.id, worker_id=LIVE_WORKER) is None
+
+        task_data = executor.get_task_by_id(result.id)
+        assert task_data["status"] == TaskResultStatus.RUNNING
+        assert task_data["worker_ids_json"] == "[]"
+        assert task_data["started_at"] == ""
+
+    def test_claim_records_the_attempt(self, redis_backend, clean_redis):
+        from tests.tasks import simple_task
+
+        result = simple_task.enqueue(1, 2)
+
+        assert redis_backend.claim_task(result.id, worker_id="worker-a")
+        first = executor.get_task_by_id(result.id)
+        assert first["status"] == TaskResultStatus.RUNNING
+        assert json.loads(first["worker_ids_json"]) == ["worker-a"]
+        assert first["started_at"] == first["last_attempted_at"] != ""
+
+        # A second attempt from FAILED keeps started_at and adds the worker.
+        set_task_fields(
+            redis_backend, result.id, mapping={"status": TaskResultStatus.FAILED}
+        )
+        assert redis_backend.claim_task(
+            result.id,
+            worker_id="worker-b",
+            from_statuses=[TaskResultStatus.READY, TaskResultStatus.FAILED],
+        )
+        second = executor.get_task_by_id(result.id)
+        assert json.loads(second["worker_ids_json"]) == ["worker-a", "worker-b"]
+        assert second["started_at"] == first["started_at"]
+        assert second["last_attempted_at"] >= first["last_attempted_at"]
+
+    def test_claim_of_a_missing_task_raises(self, redis_backend, clean_redis):
+        from django.tasks.exceptions import TaskResultDoesNotExist
+
+        with pytest.raises(TaskResultDoesNotExist):
+            redis_backend.claim_task("does-not-exist")
+        with pytest.raises(TaskResultDoesNotExist):
+            redis_backend.run_task("does-not-exist")

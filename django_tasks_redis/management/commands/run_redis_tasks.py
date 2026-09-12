@@ -166,7 +166,9 @@ class Command(BaseCommand):
                 # down with it: its message stays pending and is handed out
                 # again.
                 try:
-                    self._run_broker_message(backend, broker, message, worker_id)
+                    result = self._run_broker_message(
+                        backend, broker, message, worker_id
+                    )
                 except Exception:
                     logger.exception("Worker %s failed to process a task", worker_id)
                     self.stderr.write(
@@ -175,6 +177,9 @@ class Command(BaseCommand):
                     if not continuous:
                         return tasks_processed
                     time.sleep(interval)
+                    continue
+
+                if result is None:
                     continue
 
                 tasks_processed += 1
@@ -195,6 +200,10 @@ class Command(BaseCommand):
         An exception from the run leaves the message with the broker: for a
         stream that means it stays pending for this consumer, to be served
         again or reclaimed by another worker.
+
+        Returns:
+            The TaskResult, or None if the task was claimed by someone else
+            between the read and the run and so did not run here.
         """
         try:
             result = backend.run_task(message.task_id, worker_id=worker_id)
@@ -202,7 +211,15 @@ class Command(BaseCommand):
             broker.nack(message)
             raise
 
+        # Acknowledged either way: the task ran, or another caller has it and
+        # redelivering the message would not help.
         broker.ack(message)
+
+        if result is None:
+            self.stdout.write(
+                f"Task {message.task_id[:8]} is not ready to run; nothing to do"
+            )
+            return None
 
         status_style = (
             self.style.SUCCESS
