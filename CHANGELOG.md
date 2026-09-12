@@ -35,7 +35,8 @@ between finishing the work and recording the result.
 - **`REDIS_SCAN_BATCH_SIZE`** (default 500), the number of tasks read per
   round trip when the admin, the statistics and the purge walk the results
   index. `purge_completed_redis_tasks --batch-size` was accepted and ignored
-  before; it now sets this for one run.
+  before; it now overrides this for one run, and applies the setting when it
+  is not given.
 - **`REDIS_SSL_CA_CERTS`**, the path of a CA certificate to verify the
   server with, for a Redis or Valkey behind TLS with a self-signed or private
   CA. It takes effect with `REDIS_SSL=True` or a `rediss://` URL; set without

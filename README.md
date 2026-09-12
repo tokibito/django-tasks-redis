@@ -236,7 +236,7 @@ python manage.py purge_completed_redis_tasks [options]
 Options:
   --days N                Delete tasks completed N+ days ago
   --status STATUS         Target status (default: SUCCESSFUL,FAILED)
-  --batch-size N          Batch delete size (default: 1000)
+  --batch-size N          Tasks read per round trip (default: REDIS_SCAN_BATCH_SIZE)
   --dry-run               Only show count, don't delete
   --backend BACKEND_NAME  Backend name (default: default)
 ```

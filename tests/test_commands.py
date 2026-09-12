@@ -113,6 +113,17 @@ class TestPurgeCompletedRedisTasksCommand:
         output = out.getvalue()
         assert "Deleted 1 task(s)" in output
 
+    def test_purge_uses_the_configured_batch_size_by_default(self, clean_redis):
+        """Without --batch-size the REDIS_SCAN_BATCH_SIZE setting applies."""
+        from unittest import mock
+
+        with mock.patch(
+            "django_tasks_redis.executor.purge_completed_tasks", return_value=0
+        ) as purge:
+            call_command("purge_completed_redis_tasks", stdout=StringIO())
+
+        assert purge.call_args.kwargs["batch_size"] is None
+
     def test_purge_honours_batch_size(self, redis_backend, clean_redis):
         """--batch-size changes how tasks are read, not what is deleted."""
         from datetime import timedelta
