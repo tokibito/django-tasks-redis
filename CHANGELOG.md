@@ -7,8 +7,35 @@ has to override `get_auth_handler()` before upgrading, or every call answers
 `403`. Nothing else needs a change, apart from one `migrate` run for the admin
 permissions.
 
+**Tasks are now delivered at least once.** A worker that dies leaves its
+message pending; another worker reclaims it after `REDIS_CLAIM_TIMEOUT` and
+runs the task again, which before this release never happened. Two things
+follow: `REDIS_CLAIM_TIMEOUT` (default 300 seconds) must be longer than the
+longest task the workers run, or a task still running is executed a second
+time, and task functions should be idempotent, since a worker can die
+between finishing the work and recording the result.
+
 ### Added
 
+- **`REDIS_SOCKET_CONNECT_TIMEOUT`**, **`REDIS_HEALTH_CHECK_INTERVAL`**,
+  **`REDIS_SOCKET_TIMEOUT`** and **`REDIS_SOCKET_KEEPALIVE`**, passed
+  through to redis-py from both a `REDIS_URL` and individual parameters.
+  Without them a Redis restart or a network partition left a worker blocked
+  on a half-open socket for as long as the kernel allowed. The connect
+  timeout defaults to 5 seconds and the health check interval to 30; set an
+  option to `None` to drop its default. `REDIS_SOCKET_TIMEOUT` has no default
+  because it also bounds the worker's blocking read, so a value below
+  `REDIS_BLOCK_TIMEOUT` makes every fetch raise.
+- **`REDIS_MAX_DELIVERIES`** (default 5). A task that has been started this
+  many times without finishing is given up on the next time its message is
+  reclaimed: it is marked FAILED with a `TaskAbandoned` error and shows up in
+  the admin instead of being retried forever. Only starts count, not
+  deliveries, and a task that already finished keeps its result. `0`
+  disables the cap.
+- **`REDIS_SCAN_BATCH_SIZE`** (default 500), the number of tasks read per
+  round trip when the admin, the statistics and the purge walk the results
+  index. `purge_completed_redis_tasks --batch-size` was accepted and ignored
+  before; it now sets this for one run.
 - **`REDIS_SSL_CA_CERTS`**, the path of a CA certificate to verify the
   server with, for a Redis or Valkey behind TLS with a self-signed or private
   CA. It takes effect with `REDIS_SSL=True` or a `rediss://` URL; set without
@@ -26,6 +53,22 @@ permissions.
 
 ### Changed
 
+- **A continuous worker waits on the streams** for up to
+  `REDIS_BLOCK_TIMEOUT` instead of sleeping between polls. The setting was
+  parsed and never used. `--interval` now only applies when the wait is
+  disabled with `REDIS_BLOCK_TIMEOUT: 0`; the block timeout also bounds how
+  long a shutdown signal takes to be noticed.
+- **Acknowledged stream entries are deleted.** The worker only ever sent
+  `XACK`, so each priority stream grew by one entry per task forever.
+- **`purge_completed_tasks()` and `purge_completed_redis_tasks` refuse a
+  negative `days`.** A negative age put the cutoff in the future, matched
+  every completed task and deleted the whole history. `--dry-run` no longer
+  writes anything, not even index housekeeping.
+- **A connection error is no longer mistaken for an empty queue.** The
+  fetch and the stale-message sweep caught every exception where they meant
+  to tolerate a stream that did not exist yet, so a Redis that had gone away
+  or refused authentication looked like a worker with nothing to do. Only
+  `NOGROUP` is tolerated now.
 - **The HTTP task endpoints answer `403` until authenticated.**
   `get_auth_handler()` was documented as the authentication hook, but nothing
   called it, so `/tasks/run/`, `/tasks/execute/<id>/`, `/tasks/status/<id>/`
@@ -50,6 +93,39 @@ permissions.
 
 ### Fixed
 
+- **A delayed task could be queued more than once.** Promotion from the
+  delayed set ran `ZRANGEBYSCORE`, `HGETALL`, `XADD`, `ZREM` with nothing
+  serialising it, on every worker on every fetch, so two idle workers
+  reading the same due task both queued it, and a task that re-enqueues
+  itself with `run_after` fanned out exponentially. Promotion is one atomic
+  script in which `ZREM` is the claim.
+- **A task whose worker died was never run again.** Stale messages were
+  reclaimed for a random consumer id nobody read from, and the fetch only
+  ever asked for new messages, so a reclaimed message bounced between
+  phantom consumers forever. Messages are reclaimed for the sweeping
+  worker's own consumer, which serves its own pending messages before new
+  ones, and a task the dead worker left RUNNING is handed back as READY when
+  its message is reclaimed.
+- Recovery looked at only the first 100 pending entries of each stream.
+- A task fetched before its `run_after` was acknowledged and dropped. It
+  goes back to the delayed set.
+- A task delayed further out than `REDIS_RESULT_TTL` lost its data before it
+  was due. The result now outlives the delay.
+- `run_task_by_id()` read the status and then wrote it, so an external
+  trigger delivered twice ran the task twice. The claim is atomic, and a
+  retry of a FAILED task keeps its error history instead of erasing it.
+- A `task_path` that can no longer be imported left the task RUNNING with
+  no error and took a `--continuous` worker down. It is recorded as FAILED
+  and the worker carries on.
+- `deserialize_datetime()` returned whatever the stored string carried, so a
+  value written under a different `USE_TZ` raised `TypeError: can't compare
+  offset-naive and offset-aware datetimes` inside the worker. Naive and
+  aware values are normalised to the reader's setting, preserving the
+  instant.
+- Enqueue writes the task hash, the index entry and the queue entry in one
+  transaction, so a task can no longer be stored but never queued.
+- The admin task list, the statistics and the purge walked the results index
+  with one round trip per task. They use `SSCAN` and pipelined `HGETALL`.
 - **The admin templates and translations are in the package.** Neither the
   wheel nor the sdist contained `templates/` or `locale/`, so on any install
   that was not a source checkout, clicking a task in the admin raised
@@ -80,8 +156,13 @@ permissions.
   defined it. Run more processes to scale.
 - A *Permissions* table for the admin, and a section on opening the HTTP
   endpoints.
+- A *Delivery guarantees* section on what at-least-once means for
+  `REDIS_CLAIM_TIMEOUT` and task design, and a *Connection robustness*
+  section on the new connection options, including that redis-py's default
+  retry policy multiplies the connect timeout.
 - `CONTRIBUTING.md`, covering the development setup, running the tests
-  against Redis and Valkey, and what a pull request needs.
+  against Redis and Valkey, and what a pull request needs. The test suite
+  reads `REDIS_URL` from the environment to run against another server.
 - This file.
 
 ## 0.1.0
