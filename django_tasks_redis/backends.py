@@ -6,6 +6,8 @@ import asyncio
 import logging
 import traceback
 import uuid
+import warnings
+from functools import cached_property
 from importlib import import_module
 from inspect import iscoroutinefunction
 
@@ -108,6 +110,10 @@ class RedisTaskBackend(BaseTaskBackend):
     # class here; it is built once per backend and reads its settings from it.
     broker_class = RedisStreamsBroker
 
+    # Set on an instance once its deprecated get_auth_handler() override has
+    # been reported, so the warning is emitted once per backend.
+    _legacy_auth_handler_warned = False
+
     def __init__(self, alias, params):
         super().__init__(alias, params)
         self._client = None
@@ -169,9 +175,14 @@ class RedisTaskBackend(BaseTaskBackend):
         """
         Get the authentication handler for task execution endpoints.
 
-        Subclasses must override this to open the HTTP endpoints in
-        ``django_tasks_redis.urls``. The handler is a callable that takes a
-        request and returns:
+        .. deprecated:: 0.3
+            Override :meth:`get_auth_handlers` instead. This method keeps
+            working in 0.3 and is removed in 0.4. A subclass that still
+            overrides it gets a :class:`DeprecationWarning` once, and its
+            return value is wrapped into a one-element list passed to
+            ``get_auth_handlers()``.
+
+        The handler is a callable that takes a request and returns:
         - None if authentication succeeds
         - An HttpResponse with error details if authentication fails
 
@@ -183,6 +194,112 @@ class RedisTaskBackend(BaseTaskBackend):
             Callable or None
         """
         return None
+
+    # Marks the implementation above as one of this library's own, so an
+    # override written by a project can be told apart from it.
+    get_auth_handler._is_library_auth_handler = True
+
+    def get_auth_handlers(self, endpoint=None):
+        """
+        Get the authentication handlers for the task HTTP endpoints.
+
+        A request is accepted as soon as one handler accepts it, so a backend
+        can let both the service that calls the endpoints (Cloud Tasks, a
+        webhook) and an external cron job in, each with its own credentials.
+
+        Each handler is a callable that takes a request and returns:
+        - None if authentication succeeds
+        - A response with error details if authentication fails
+
+        An empty list keeps the endpoints closed: they run and delete tasks,
+        so they cannot be reachable without the backend having said how to
+        authenticate them.
+
+        Args:
+            endpoint: Name of the endpoint being called (``"run"``,
+                ``"run_one"``, ``"status"``, ``"execute"`` or ``"purge"``),
+                or ``None`` to get every handler regardless of the endpoint
+                it applies to.
+
+        Returns:
+            list of callables
+        """
+        handlers = list(self.get_broker_auth_handlers(endpoint))
+        handlers.extend(self.get_configured_auth_handlers(endpoint))
+        return handlers
+
+    def get_broker_auth_handlers(self, endpoint=None):
+        """
+        Get the handlers that authenticate the service calling the endpoints.
+
+        These come from the broker, which knows how the service it talks to
+        signs its requests. A deprecated :meth:`get_auth_handler` override is
+        adapted here too, so a project written against 0.2 keeps being
+        accepted without a second subclass.
+
+        Returns:
+            list of callables
+        """
+        handlers = []
+        if self.broker is not None:
+            # A broker that is not a TaskBroker has no handler, and the
+            # Redis brokers are pull-only: they have nothing to authenticate.
+            get_broker_handlers = getattr(self.broker, "get_auth_handlers", None)
+            if get_broker_handlers is not None:
+                handlers.extend(get_broker_handlers(endpoint) or [])
+
+        handler = self._get_legacy_auth_handler()
+        if handler is not None:
+            handlers.append(handler)
+
+        return handlers
+
+    def get_configured_auth_handlers(self, endpoint=None):
+        """
+        Get the handlers built from the ``AUTH_HANDLERS`` backend option.
+
+        Returns:
+            list of callables
+        """
+        return [
+            handler
+            for handler, endpoints in self._auth_handler_specs
+            if endpoint is None or endpoints is None or endpoint in endpoints
+        ]
+
+    @cached_property
+    def _auth_handler_specs(self):
+        """Load ``AUTH_HANDLERS`` once per backend instance."""
+        from .auth import load_auth_handlers
+
+        return load_auth_handlers(
+            self.options.get("AUTH_HANDLERS"),
+            self.options.get("AUTH_HANDLER_OPTIONS"),
+        )
+
+    def _get_legacy_auth_handler(self):
+        """
+        Call a deprecated :meth:`get_auth_handler` override written by a project.
+
+        Implementations this library ships are skipped: the no-op default
+        above and the compat shims on the bundled backends, which would
+        otherwise be counted twice.
+        """
+        implementation = type(self).get_auth_handler
+        if getattr(implementation, "_is_library_auth_handler", False):
+            return None
+
+        if not self._legacy_auth_handler_warned:
+            warnings.warn(
+                f"{type(self).__name__}.get_auth_handler() is deprecated and "
+                "will be removed in django-tasks-redis 0.4. Override "
+                "get_auth_handlers() or configure AUTH_HANDLERS instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            self._legacy_auth_handler_warned = True
+
+        return self.get_auth_handler()
 
     def enqueue(self, task, args, kwargs):
         """

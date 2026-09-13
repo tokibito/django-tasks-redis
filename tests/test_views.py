@@ -2,12 +2,28 @@
 Tests for views module.
 """
 
+import warnings
+
 import pytest
 from django.conf import settings
+from django.http import JsonResponse
 from django.tasks import task_backends
 from django.test import Client, override_settings
 
 from django_tasks_redis import executor
+from django_tasks_redis.backends import RedisTaskBackend
+
+
+class LegacyHandlerBackend(RedisTaskBackend):
+    """Backend that still overrides the deprecated get_auth_handler()."""
+
+    def get_auth_handler(self):
+        def handler(request):
+            if request.headers.get("X-Task-Token") != "legacy-token":
+                return JsonResponse({"error": "Forbidden"}, status=403)
+            return None
+
+        return handler
 
 
 @pytest.mark.django_db
@@ -39,7 +55,8 @@ class TestTaskEndpointAuth:
         response = client.post("/tasks/run/", {"backend_name": "closed"})
 
         assert response.status_code == 403
-        assert "get_auth_handler" in response.json()["error"]
+        assert "get_auth_handlers" in response.json()["error"]
+        assert "AUTH_HANDLERS" in response.json()["error"]
 
     def test_unknown_backend_is_rejected(self, clean_redis, auth_client):
         """An unknown backend name is refused instead of raising."""
@@ -79,15 +96,199 @@ class TestTaskEndpointAuth:
             seen["body"] = request.body
             return None
 
-        backend.get_auth_handler = lambda: handler
+        backend.get_auth_handlers = lambda endpoint=None: [handler]
         try:
             post = {} if content_type is None else {"content_type": content_type}
             response = Client().post("/tasks/run/", data, **post)
         finally:
-            del backend.get_auth_handler
+            del backend.get_auth_handlers
 
         assert response.status_code == 200
         assert b"max_tasks" in seen["body"]
+
+    def test_empty_handler_list_keeps_endpoint_closed(self, clean_redis):
+        """An empty handler list is the closed-by-default signal, not open."""
+        backend = task_backends["default"]
+        backend.get_auth_handlers = lambda endpoint=None: []
+        try:
+            response = Client(headers={"x-task-token": "test-endpoint-token"}).post(
+                "/tasks/run/"
+            )
+        finally:
+            del backend.get_auth_handlers
+
+        assert response.status_code == 403
+
+    def test_first_accepting_handler_wins(self, clean_redis):
+        """A request is accepted as soon as one handler accepts it."""
+        backend = task_backends["default"]
+        called = []
+
+        def reject(request):
+            called.append("reject")
+            return JsonResponse({"error": "no"}, status=401)
+
+        def accept(request):
+            called.append("accept")
+            return None
+
+        backend.get_auth_handlers = lambda endpoint=None: [reject, accept]
+        try:
+            response = Client().post("/tasks/run/")
+        finally:
+            del backend.get_auth_handlers
+
+        assert response.status_code == 200
+        # The reject handler ran, the accept handler ran, no third handler did.
+        assert called == ["reject", "accept"]
+
+    def test_first_rejection_returned_when_all_reject(self, clean_redis):
+        """When every handler rejects, the first rejection is the response."""
+        backend = task_backends["default"]
+
+        def first_reject(request):
+            return JsonResponse({"error": "first"}, status=401)
+
+        def second_reject(request):
+            return JsonResponse({"error": "second"}, status=403)
+
+        backend.get_auth_handlers = lambda endpoint=None: [first_reject, second_reject]
+        try:
+            response = Client().post("/tasks/run/")
+        finally:
+            del backend.get_auth_handlers
+
+        assert response.status_code == 401
+        assert response.json() == {"error": "first"}
+
+    def test_endpoints_option_excludes_a_handler_from_a_view(self, clean_redis):
+        """A handler scoped to one endpoint does not fire on another."""
+        # A bare RedisTaskBackend whose only handler is scoped to "purge".
+        # /tasks/run/ has no matching handler, so it falls through to the
+        # closed 403.
+        scoped = {
+            **settings.TASKS,
+            "scoped": {
+                "BACKEND": "django_tasks_redis.RedisTaskBackend",
+                "QUEUES": [],
+                "OPTIONS": {
+                    **settings.TASKS["default"]["OPTIONS"],
+                    "AUTH_HANDLERS": [
+                        {
+                            "HANDLER": "django_tasks_redis.auth.SharedSecretAuth",
+                            "OPTIONS": {"TOKEN": "test-endpoint-token"},
+                            "ENDPOINTS": ["purge"],
+                        }
+                    ],
+                },
+            },
+        }
+
+        with override_settings(TASKS=scoped):
+            # /tasks/run/ has no matching handler, so the endpoint stays closed.
+            run_response = Client(headers={"x-task-token": "test-endpoint-token"}).post(
+                "/tasks/run/", {"backend_name": "scoped"}
+            )
+            assert run_response.status_code == 403
+
+            # /tasks/purge/ shares the token header, but SharedSecretAuth
+            # reads Authorization by default, not X-Task-Token. So even on the
+            # matching endpoint, the handler rejects and the first rejection
+            # is returned.
+            purge_response = Client(
+                headers={"x-task-token": "test-endpoint-token"}
+            ).post("/tasks/purge/", {"backend_name": "scoped", "days": "0"})
+            assert purge_response.status_code == 401
+            assert "Missing Authorization header" in purge_response.content.decode()
+
+    def test_auth_handlers_option_opens_endpoints_without_a_subclass(self, clean_redis):
+        """Configuring AUTH_HANDLERS is enough to open the endpoints."""
+        from django_tasks_redis.auth import SharedSecretAuth
+
+        configured = {
+            **settings.TASKS,
+            "configured": {
+                "BACKEND": "django_tasks_redis.RedisTaskBackend",
+                "QUEUES": [],
+                "OPTIONS": {
+                    **settings.TASKS["default"]["OPTIONS"],
+                    "AUTH_HANDLERS": [SharedSecretAuth({"TOKEN": "shared-secret"})],
+                },
+            },
+        }
+
+        with override_settings(TASKS=configured):
+            # Wrong token: rejected by the configured handler.
+            bad = Client(headers={"authorization": "Bearer wrong"}).post(
+                "/tasks/run/", {"backend_name": "configured"}
+            )
+            assert bad.status_code == 401
+            assert "Invalid token" in bad.content.decode()
+
+            # Right token: accepted.
+            good = Client(headers={"authorization": "Bearer shared-secret"}).post(
+                "/tasks/run/", {"backend_name": "configured"}
+            )
+            assert good.status_code == 200
+
+    def test_deprecated_get_auth_handler_override_still_works_with_warning(
+        self, clean_redis
+    ):
+        """A subclass still overriding get_auth_handler() emits a warning
+        and its return value is used as the sole handler."""
+
+        legacy = {
+            **settings.TASKS,
+            "legacy": {
+                "BACKEND": "tests.test_views.LegacyHandlerBackend",
+                "QUEUES": [],
+                "OPTIONS": settings.TASKS["default"]["OPTIONS"],
+            },
+        }
+
+        with (
+            override_settings(TASKS=legacy),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            bad = Client().post("/tasks/run/", {"backend_name": "legacy"})
+            assert bad.status_code == 403
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert deprecations, "expected a DeprecationWarning"
+        assert "get_auth_handler()" in str(deprecations[0].message)
+        assert "get_auth_handlers" in str(deprecations[0].message)
+
+        # And the legacy handler is still actually called: the right token
+        # reaches the view.
+        with override_settings(TASKS=legacy):
+            good = Client(headers={"x-task-token": "legacy-token"}).post(
+                "/tasks/run/", {"backend_name": "legacy"}
+            )
+        assert good.status_code == 200
+
+    def test_deprecation_warning_emitted_once_per_backend(self, clean_redis):
+        """The warning fires on the first use, not on every request."""
+        legacy = {
+            **settings.TASKS,
+            "legacy": {
+                "BACKEND": "tests.test_views.LegacyHandlerBackend",
+                "QUEUES": [],
+                "OPTIONS": settings.TASKS["default"]["OPTIONS"],
+            },
+        }
+
+        client = Client()
+        with (
+            override_settings(TASKS=legacy),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            for _ in range(3):
+                client.post("/tasks/run/", {"backend_name": "legacy"})
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
 
 
 @pytest.mark.django_db

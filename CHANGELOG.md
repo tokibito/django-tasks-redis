@@ -4,6 +4,43 @@
 
 ### Added
 
+- **`get_auth_handlers(endpoint=None)` and the `AUTH_HANDLERS` /
+  `AUTH_HANDLER_OPTIONS` backend options.** A backend returns a list of
+  handlers from `get_auth_handlers()`; the views accept a request as soon as
+  one handler accepts it, so the service that calls the endpoints and an
+  external cron job can use different credentials on the same backend. When
+  every handler rejects, the first rejection is returned. An entry in
+  `AUTH_HANDLERS` can be a dotted path, a callable, an instance, or a dict
+  with `HANDLER`, `OPTIONS` and `ENDPOINTS`; the last limits a handler to a
+  subset of `run`, `run_one`, `status`, `execute` and `purge`. The
+  configuration is loaded once per backend instance from a `cached_property`.
+- **Bundled authentication handlers** in `django_tasks_redis.auth`:
+  `SharedSecretAuth` (a token in a header, compared with `hmac.compare_digest`),
+  `HMACAuth` (a signature over timestamp, method, path and body, with replay
+  protection) and `StaffOnlyAuth`, plus `build_signature()` for callers.
+  Secrets are read from a setting or an environment variable by name rather
+  than written into `OPTIONS`. `BaseAuthHandler`, `HMACAuth`,
+  `SharedSecretAuth`, `StaffOnlyAuth`, `build_signature` and `AUTH_ENDPOINTS`
+  are importable from `django_tasks_redis`.
+  ([#25](https://github.com/tokibito/django-tasks-redis/issues/25))
+
+### Changed
+
+- The HTTP task endpoints run every handler a backend returns from
+  `get_auth_handlers()`, not just one. The empty-list-stays-closed behavior
+  from 0.2.0 is kept: a backend that returns no handlers still answers `403`
+  on every endpoint.
+
+### Deprecated
+
+- `RedisTaskBackend.get_auth_handler()` (singular). It still works, with a
+  `DeprecationWarning` emitted once per backend when a subclass overrides it,
+  and is removed in 0.4. Override `get_auth_handlers()` or configure
+  `AUTH_HANDLERS` instead.
+  ([#25](https://github.com/tokibito/django-tasks-redis/issues/25))
+
+### Added
+
 - **`backend.broker`, a `RedisStreamsBroker`** with the consuming interface
   django-database-task gives its pull brokers: `receive()` returns
   `BrokerMessage` objects, `ack()` sends `XACK` and `XDEL`, `nack()` leaves

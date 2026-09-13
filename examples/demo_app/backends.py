@@ -15,10 +15,10 @@ class TokenAuthRedisTaskBackend(RedisTaskBackend):
     A real project would verify a signature over request.body instead.
     """
 
-    def get_auth_handler(self):
+    def get_auth_handlers(self, endpoint=None):
         def handler(request):
             if request.headers.get("X-Task-Token") != settings.TASK_ENDPOINT_TOKEN:
                 return JsonResponse({"error": "Forbidden"}, status=403)
             return None
 
-        return handler
+        return [handler]

@@ -4,10 +4,17 @@ HTTP endpoints for Redis task operations.
 These views provide HTTP API for external triggers like webhooks,
 Cloud Scheduler, etc.
 
-Every endpoint runs the backend's authentication handler first. That handler is
-None by default, which keeps the endpoints closed: they execute and delete
-tasks, so a project has to say how they are authenticated before they answer.
-See RedisTaskBackend.get_auth_handler().
+Every endpoint runs the backend's authentication handlers first. The
+backend decides how requests are authenticated by returning handlers from
+``get_auth_handlers()`` (see ``RedisTaskBackend.get_auth_handlers``). Each
+handler takes the request and returns ``None`` to accept it, or a response
+to reject it. The handlers are tried in order and the request is accepted as
+soon as one of them accepts it. When every handler rejects the request, the
+first rejection is returned.
+
+When the backend returns no handlers, every endpoint answers 403: they run
+and delete tasks, so a project has to say how they are authenticated before
+they answer. See ``RedisTaskBackend.get_auth_handlers()``.
 """
 
 from django.http import JsonResponse
@@ -34,11 +41,25 @@ def _int_param(params, name, default):
 class TaskEndpointMixin:
     """Authenticate a request against the backend it addresses."""
 
+    # Endpoint name passed to get_auth_handlers(), so a handler can be
+    # configured for a subset of the endpoints. See auth.AUTH_ENDPOINTS.
+    auth_endpoint = None
+
     def get_backend_name(self, request):
         """Read the backend the request targets, the same way the view does."""
         if request.method == "POST":
             return request.POST.get("backend_name", "default")
         return request.GET.get("backend_name", "default")
+
+    def _get_backend_auth_handlers(self, backend):
+        """Return the handlers the backend provides, or [] for none."""
+        # A backend that is not a RedisTaskBackend has no get_auth_handlers,
+        # and its endpoints are just as closed: treat that the same as an
+        # empty handler list.
+        get_auth_handlers = getattr(backend, "get_auth_handlers", None)
+        if get_auth_handlers is None:
+            return []
+        return list(get_auth_handlers(self.auth_endpoint) or [])
 
     def dispatch(self, request, *args, **kwargs):
         if request.method == "POST":
@@ -51,22 +72,35 @@ class TaskEndpointMixin:
         except InvalidTaskBackend:
             return JsonResponse({"error": "Unknown backend"}, status=400)
 
-        # A backend that is not a RedisTaskBackend has no handler, and is
-        # just as closed.
-        get_auth_handler = getattr(backend, "get_auth_handler", None)
-        handler = get_auth_handler() if get_auth_handler else None
-        if handler is None:
+        handlers = self._get_backend_auth_handlers(backend)
+        if not handlers:
+            # An empty handler list keeps the endpoints closed, the same way
+            # 0.2.0 did: the endpoints run and delete tasks, so they cannot
+            # be reachable without the backend having said how to authenticate
+            # them.
             return JsonResponse(
                 {
                     "error": "Task endpoints are disabled. Override "
-                    "get_auth_handler() on the task backend to enable them."
+                    "get_auth_handlers() on the task backend, or set the "
+                    "AUTH_HANDLERS option, to enable them."
                 },
                 status=403,
             )
 
-        response = handler(request)
-        if response is not None:
-            return response
+        first_error = None
+        for handler in handlers:
+            error_response = handler(request)
+            if error_response is None:
+                # Accepted: hand off to the view, do not look at the
+                # rejection a previous handler returned.
+                return super().dispatch(request, *args, **kwargs)
+            if first_error is None:
+                first_error = error_response
+
+        # No handler accepted. Return the first rejection, so the caller
+        # sees the same error whether the backend had one handler or many.
+        if first_error is not None:
+            return first_error
 
         return super().dispatch(request, *args, **kwargs)
 
@@ -74,6 +108,8 @@ class TaskEndpointMixin:
 @method_decorator(csrf_exempt, name="dispatch")
 class RunTasksView(TaskEndpointMixin, View):
     """Process multiple tasks."""
+
+    auth_endpoint = "run"
 
     def post(self, request):
         queue_name = request.POST.get("queue_name")
@@ -100,6 +136,8 @@ class RunTasksView(TaskEndpointMixin, View):
 class RunOneTaskView(TaskEndpointMixin, View):
     """Process a single task."""
 
+    auth_endpoint = "run_one"
+
     def post(self, request):
         queue_name = request.POST.get("queue_name")
         backend_name = request.POST.get("backend_name", "default")
@@ -123,6 +161,8 @@ class RunOneTaskView(TaskEndpointMixin, View):
 @method_decorator(csrf_exempt, name="dispatch")
 class ExecuteTaskView(TaskEndpointMixin, View):
     """Execute a specific task by ID (for Cloud Tasks, webhooks, etc.)."""
+
+    auth_endpoint = "execute"
 
     def post(self, request, task_id):
         backend_name = request.POST.get("backend_name", "default")
@@ -153,6 +193,8 @@ class ExecuteTaskView(TaskEndpointMixin, View):
 class TaskStatusView(TaskEndpointMixin, View):
     """Get task status by ID."""
 
+    auth_endpoint = "status"
+
     def get(self, request, task_id):
         backend_name = request.GET.get("backend_name", "default")
 
@@ -167,6 +209,8 @@ class TaskStatusView(TaskEndpointMixin, View):
 @method_decorator(csrf_exempt, name="dispatch")
 class PurgeCompletedTasksView(TaskEndpointMixin, View):
     """Purge completed tasks."""
+
+    auth_endpoint = "purge"
 
     def post(self, request):
         backend_name = request.POST.get("backend_name", "default")
