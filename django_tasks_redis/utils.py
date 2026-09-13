@@ -5,6 +5,7 @@ Utility functions for Redis connection and data handling.
 import json
 import logging
 import socket
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -269,3 +270,60 @@ def priority_to_level(priority: int) -> str:
     elif priority < 0:
         return "low"
     return "normal"
+
+
+def task_log_fields(task_data, worker_id=None, **extra):
+    """
+    Build the ``extra`` mapping attached to a task's log records.
+
+    These are the fields an operator filters on once the records go through
+    a structured (JSON) formatter, so they are kept flat and named apart
+    from LogRecord's own attributes.
+
+    Args:
+        task_data: The Redis hash dict for the task, or anything that maps
+            ``task_id`` / ``task_path`` / ``queue_name`` / ``priority`` /
+            ``backend_name`` to its values.
+        worker_id: Worker that ran (or is running) the task, or None when
+            the record is emitted before a worker is known.
+        **extra: Extra fields to merge in last, so a caller can add
+            ``status``, ``duration_ms`` or ``error_class`` without
+            rebuilding the mapping.
+    """
+    fields = {
+        "task_id": task_data.get("task_id"),
+        "task_path": task_data.get("task_path"),
+        "queue_name": task_data.get("queue_name"),
+        "priority": _priority_as_int(task_data.get("priority")),
+        "backend_alias": task_data.get("backend_name"),
+        "worker_id": worker_id,
+    }
+    fields.update(extra)
+    return fields
+
+
+def _priority_as_int(value):
+    """
+    Coerce a priority value read from the Redis hash to an int.
+
+    The hash stores it as a string (the task was written through
+    ``serialize_json``); a None or empty value stays None.
+    """
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _elapsed_ms(started_monotonic):
+    """
+    Milliseconds since a ``time.monotonic()`` reading, rounded to the ms.
+
+    The wall time of the run is kept apart from the stored ``started_at`` /
+    ``finished_at`` because those are database-style timestamps that can be
+    rewritten by a recovery sweep, and the operator wants the time the task
+    actually spent in the function.
+    """
+    return round((time.monotonic() - started_monotonic) * 1000)

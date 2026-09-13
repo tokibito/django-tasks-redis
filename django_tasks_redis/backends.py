@@ -4,6 +4,7 @@ Redis/Valkey task backend implementation.
 
 import asyncio
 import logging
+import time
 import traceback
 import uuid
 from importlib import import_module
@@ -19,6 +20,7 @@ from django.utils.json import normalize_json
 from .brokers import RedisStreamsBroker
 from .exceptions import TaskAbandoned
 from .utils import (
+    _elapsed_ms,
     deserialize_datetime,
     deserialize_json,
     get_delayed_key,
@@ -28,6 +30,7 @@ from .utils import (
     priority_to_level,
     serialize_datetime,
     serialize_json,
+    task_log_fields,
 )
 
 logger = logging.getLogger("django_tasks_redis")
@@ -403,18 +406,37 @@ class RedisTaskBackend(BaseTaskBackend):
         try:
             task = self._resolve_task(task_data["task_path"])
             task_result = self._data_to_result(task_data, task)
+            logger.info(
+                "Task started: id=%s path=%s",
+                task_result.id,
+                task_data["task_path"],
+                extra=task_log_fields(task_data, worker_id),
+            )
             task_started.send(sender=self.__class__, task_result=task_result)
         except Exception as e:
-            self._record_error(
-                result_key,
-                task_data,
-                TaskError(
-                    exception_class_path=f"{type(e).__module__}.{type(e).__qualname__}",
-                    traceback=traceback.format_exc(),
+            error = TaskError(
+                exception_class_path=f"{type(e).__module__}.{type(e).__qualname__}",
+                traceback=traceback.format_exc(),
+            )
+            self._record_error(result_key, task_data, error)
+            logger.exception(
+                "Task could not be started: id=%s error=%s",
+                task_id,
+                error.exception_class_path,
+                extra=task_log_fields(
+                    task_data,
+                    worker_id,
+                    status=str(TaskResultStatus.FAILED),
+                    error_class=error.exception_class_path,
                 ),
             )
-            logger.exception("Task could not be started: id=%s", task_id)
             raise
+
+        # Wall time of the run itself, kept apart from started_at / finished_at
+        # because those are stored timestamps and can be rewritten by a recovery
+        # sweep. The operator wants the time the task actually spent in the
+        # function, which is what duration_ms reports.
+        started_monotonic = time.monotonic()
 
         try:
             # Get task function
@@ -467,6 +489,12 @@ class RedisTaskBackend(BaseTaskBackend):
                 "Task completed successfully: id=%s path=%s",
                 final_result.id,
                 task_data["task_path"],
+                extra=task_log_fields(
+                    task_data,
+                    worker_id,
+                    status=str(TaskResultStatus.SUCCESSFUL),
+                    duration_ms=_elapsed_ms(started_monotonic),
+                ),
             )
             task_finished.send(sender=self.__class__, task_result=final_result)
             return final_result
@@ -487,6 +515,13 @@ class RedisTaskBackend(BaseTaskBackend):
                 final_result.id,
                 task_data["task_path"],
                 error.exception_class_path,
+                extra=task_log_fields(
+                    task_data,
+                    worker_id,
+                    status=str(TaskResultStatus.FAILED),
+                    duration_ms=_elapsed_ms(started_monotonic),
+                    error_class=error.exception_class_path,
+                ),
             )
             task_finished.send(sender=self.__class__, task_result=final_result)
             return final_result
@@ -582,13 +617,14 @@ class RedisTaskBackend(BaseTaskBackend):
             return False
 
         task_data = client.hgetall(result_key)
+        abandoned_path = (
+            f"{TaskAbandoned.__module__}.{TaskAbandoned.__qualname__}"
+        )
         self._record_error(
             result_key,
             task_data,
             TaskError(
-                exception_class_path=(
-                    f"{TaskAbandoned.__module__}.{TaskAbandoned.__qualname__}"
-                ),
+                exception_class_path=abandoned_path,
                 traceback=reason,
             ),
         )
@@ -597,6 +633,12 @@ class RedisTaskBackend(BaseTaskBackend):
             task_id,
             task_data.get("task_path", ""),
             reason,
+            extra=task_log_fields(
+                task_data,
+                worker_id=None,
+                status=str(TaskResultStatus.FAILED),
+                error_class=abandoned_path,
+            ),
         )
         return True
 

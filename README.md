@@ -407,6 +407,109 @@ with GracefulShutdown(timeout=50) as shutdown:
 
 The same API, with the same names, is in django-database-task.
 
+## Structured logging
+
+The library logs to the `django_tasks_redis` logger and attaches its context as
+record attributes rather than only baking it into the message, so a JSON
+formatter emits fields you can filter on instead of one opaque string.
+
+Every task record carries:
+
+| Field | Value |
+|-------|-------|
+| `task_id` | The task's UUID, as a string |
+| `task_path` | Dotted path of the task function |
+| `queue_name` | Queue the task was enqueued on |
+| `priority` | Priority it was enqueued with |
+| `backend_alias` | Key in the `TASKS` setting |
+| `worker_id` | `hostname-xxxxxxxx` of the worker that ran it |
+
+Completed runs add `status` (`SUCCESSFUL` or `FAILED`) and `duration_ms`, the
+wall time of the function call measured with `time.monotonic()` so it stays
+accurate when a recovery sweep rewrites the stored timestamps. Failures also
+add `error_class`. The worker's own start and finish records carry
+`worker_id`, `backend_alias`, `queue_name`, and — on finish — `tasks_processed`,
+`tasks_failed` and `exit_code`.
+
+| Message | Level | When |
+|---------|-------|------|
+| `Worker started` | INFO | The command has resolved its backend |
+| `Task started` | INFO | Immediately before the task function is called |
+| `Task completed successfully` | INFO | The task returned |
+| `Task failed` | ERROR | The task raised |
+| `Task could not be started` | ERROR | The task function could not be imported |
+| `Task abandoned` | ERROR | The queue gave up on the task (`mark_task_failed`) |
+| `Worker finished` | INFO | The loop has ended, with the counts and exit code |
+
+The standard library has no JSON formatter, so bring your own. This one has no
+dependencies and merges whatever the library attached:
+
+```python
+# myproject/logging.py
+import json
+import logging
+
+# Everything logging puts on a record by itself; the rest is ours.
+_RESERVED = frozenset(
+    vars(logging.LogRecord("", 0, "", 0, "", None, None))
+) | {"message", "asctime"}
+
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        payload = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        payload.update(
+            {k: v for k, v in vars(record).items() if k not in _RESERVED}
+        )
+        if record.exc_info:
+            payload["traceback"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str)
+```
+
+```python
+# settings.py
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "json": {"()": "myproject.logging.JSONFormatter"},
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+        },
+    },
+    "loggers": {
+        "django_tasks_redis": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+```
+
+A completed task then reads:
+
+```json
+{"timestamp": "2026-09-12 10:00:01,123", "level": "INFO",
+ "logger": "django_tasks_redis", "message": "Task completed successfully: id=... path=...",
+ "task_id": "...", "task_path": "myapp.tasks.send_report",
+ "queue_name": "reports", "priority": 0, "backend_alias": "default",
+ "worker_id": "host-a1b2c3d4", "status": "SUCCESSFUL", "duration_ms": 42}
+```
+
+`duration_ms` is the same value the metrics integration from
+[#2](https://github.com/tokibito/django-tasks-redis/pull/2) reads for its
+duration histogram, so the backend is the single source of truth for how long
+a task took.
+
 ## Django Admin
 
 The package provides Django Admin integration for viewing and managing tasks:
