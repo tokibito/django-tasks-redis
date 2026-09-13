@@ -153,9 +153,10 @@ the HTTP endpoints and a `run_redis_tasks` worker, all against the server on
 
 `RedisTaskBackend` is designed to be subclassed rather than configured for
 everything. The HTTP endpoints are the example that ships: they run and
-delete tasks, so they stay closed until a subclass overrides
-`get_auth_handler()` and says how a request is authenticated.
-`tests/backends.py` has the smallest complete version, a shared-secret header.
+delete tasks, so they stay closed until a backend says how to authenticate
+them — through `get_auth_handlers()` or the `AUTH_HANDLERS` option.
+`tests/backends.py` has the smallest complete version, a shared-secret
+header.
 
 A project-specific behaviour — a different authentication scheme, a hook
 around task execution, another key layout — usually belongs in such a
