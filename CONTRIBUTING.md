@@ -58,11 +58,11 @@ before a test starts, the server is usually not up: `redis-cli ping` (or
 
 ### On Windows
 
-The suite runs on Windows against a native Redis build. CI installs the
+The suite runs on Windows against a native Redis build. CI uses the
 [redis-windows](https://github.com/redis-windows/redis-windows) build of the
-upstream source as a Windows service; [Memurai](https://www.memurai.com/),
-the build Redis itself points to, works the same way. One group of tests is
-skipped there, and the run says so in its summary:
+upstream source; [Memurai](https://www.memurai.com/), the build Redis itself
+points to, works the same way. One group of tests is skipped there, and the
+run says so in its summary:
 
 - `tests/test_shutdown.py::TestGracefulShutdownSignals` and
   `tests/test_commands.py::TestRunRedisTasksGracefulShutdown` send the test
