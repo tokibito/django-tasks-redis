@@ -4,8 +4,9 @@ Management command to run Redis task worker.
 The worker receives from the backend's broker, runs the task each message
 names, and acknowledges the message. It is the same loop `run_database_tasks`
 runs against a pull broker in django-database-task, with the same graceful
-shutdown: on SIGTERM or SIGINT no new task is started, the running one is
-finished and its result written, and the process exits.
+shutdown: on SIGTERM or SIGINT (or Ctrl-Break, on Windows) no new task is
+started, the running one is finished and its result written, and the process
+exits.
 
 The exit code the process leaves behind is 0 by default, so existing cron
 lines and Kubernetes `Job`s see no change. `--empty-exit-code` and

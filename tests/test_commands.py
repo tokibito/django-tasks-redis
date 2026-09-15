@@ -5,10 +5,12 @@ Tests for management commands.
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from django.core.management import call_command
@@ -25,6 +27,8 @@ posix_signals = pytest.mark.skipif(
     sys.platform == "win32",
     reason="os.kill() cannot deliver a signal to the test process on Windows",
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.mark.django_db
@@ -192,6 +196,83 @@ class TestRunRedisTasksGracefulShutdown:
         task_data = executor.get_task_by_id(result.id)
         assert task_data["status"] == TaskResultStatus.SUCCESSFUL
         assert json.loads(task_data["return_value_json"]) < 100
+
+
+@pytest.mark.django_db
+class TestRunRedisTasksWorkerProcess:
+    """
+    The shutdown path through a real worker process, on every platform.
+
+    The tests above signal the test process itself, which Windows cannot do.
+    Here the worker is a child process and the signal is what a supervisor
+    sends there: SIGTERM on POSIX, and on Windows Ctrl-Break to a process
+    group of its own, the way a service manager that starts the worker with
+    CREATE_NEW_PROCESS_GROUP stops it. Ctrl-C cannot be used in a test: the
+    event would reach the pytest process, which shares the console.
+    """
+
+    def start_worker(self):
+        env = {
+            **os.environ,
+            "DJANGO_SETTINGS_MODULE": "tests.settings",
+            # The output is read after the child exits, but a crash before
+            # then must not lose what was written so far.
+            "PYTHONUNBUFFERED": "1",
+        }
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        return subprocess.Popen(
+            [sys.executable, "-m", "django", "run_redis_tasks", "--continuous"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **kwargs,
+        )
+
+    def wait_until_running(self, child, task_id, timeout=30):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if executor.get_task_by_id(task_id)["status"] == TaskResultStatus.RUNNING:
+                return
+            if child.poll() is not None:
+                output, _ = child.communicate()
+                pytest.fail(f"Worker exited with {child.returncode} early:\n{output}")
+            time.sleep(0.05)
+        pytest.fail(f"Task {task_id} was not started within {timeout} seconds")
+
+    def test_supervisor_signal_finishes_the_running_task(self, clean_redis):
+        """The signal a supervisor sends lets the running task finish first."""
+        from tests.tasks import slow_task
+
+        if sys.platform == "win32":
+            sig, expected_name = signal.CTRL_BREAK_EVENT, "SIGBREAK"
+        else:
+            sig, expected_name = signal.SIGTERM, "SIGTERM"
+
+        result = slow_task.enqueue(seconds=2)
+
+        child = self.start_worker()
+        try:
+            self.wait_until_running(child, result.id)
+            child.send_signal(sig)
+            output, _ = child.communicate(timeout=30)
+        except BaseException:
+            child.kill()
+            child.communicate()
+            raise
+
+        assert child.returncode == 0, output
+        assert f"Received {expected_name}" in output
+        assert "Shutdown complete" in output
+        assert "Processed 1 task(s)" in output
+        assert executor.get_task_by_id(result.id)["status"] == (
+            TaskResultStatus.SUCCESSFUL
+        )
 
 
 @pytest.mark.django_db

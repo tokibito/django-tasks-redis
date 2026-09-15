@@ -8,6 +8,19 @@ body names the method to override.
 
 ### Added
 
+- **Windows Server.** `GracefulShutdown` handles `SIGBREAK` on Windows in
+  addition to `SIGINT` and `SIGTERM`, so a worker stopped with Ctrl-Break, or
+  by a service manager sending `CTRL_BREAK_EVENT` to its process group,
+  finishes the running task before exiting; Ctrl-C, which NSSM and WinSW
+  send on stop, was already handled, and nothing on Windows delivers
+  `SIGTERM`. The README's *Graceful Shutdown* section now says which ways of
+  stopping a process on Windows reach the handler and which are a hard kill,
+  *Deployment examples* gained NSSM and WinSW services with the stop timeout
+  set longer than `--shutdown-timeout`, and *Running from a job scheduler*
+  gained a Task Scheduler shape whose *Do not start a new instance* setting
+  takes the place of `flock`. A new test starts a worker as a child process
+  and stops it the way a supervisor would, on every platform.
+  ([#41](https://github.com/tokibito/django-tasks-redis/issues/41))
 - **`--empty-exit-code` and `--failed-exit-code` for `run_redis_tasks`.**
   Both default to 0, so an existing cron line or Kubernetes `Job` sees no
   change. `--empty-exit-code CODE` exits with `CODE` when no task was
