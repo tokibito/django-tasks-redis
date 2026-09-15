@@ -291,3 +291,47 @@ class TestRunRedisTasksLogging:
         assert record.getMessage() == (
             f"Worker {record.worker_id} failed to process a task"
         )
+
+    def test_failed_to_receive_record_carries_worker_fields(self, clean_redis, caplog):
+        """
+        A read from the broker that raises names no task, so the record
+        carries the worker's own context instead, and the failure is not
+        counted against the tasks.
+        """
+        from io import StringIO
+        from unittest.mock import patch
+
+        from django.core.management import call_command
+
+        with caplog.at_level(logging.INFO, logger="django_tasks_redis"):
+            with patch(
+                "django_tasks_redis.brokers.streams.RedisStreamsBroker.receive",
+                side_effect=RuntimeError("redis is unhappy"),
+            ):
+                call_command(
+                    "run_redis_tasks",
+                    queue_name="default",
+                    stdout=StringIO(),
+                    stderr=StringIO(),
+                )
+
+        failed = [
+            r for r in caplog.records if r.msg == "Worker %s failed to receive a task"
+        ]
+        finished = [
+            r for r in caplog.records if r.getMessage().startswith("Worker finished")
+        ]
+        assert len(failed) == 1
+        assert len(finished) == 1
+        record = failed[0]
+        assert record.levelname == "ERROR"
+        assert record.exc_info is not None
+        assert record.worker_id == finished[0].worker_id
+        assert record.backend_alias == "default"
+        assert record.queue_name == "default"
+        assert record.getMessage() == (
+            f"Worker {record.worker_id} failed to receive a task"
+        )
+        # An infrastructure fault during the fetch is not a task failure.
+        assert finished[0].tasks_processed == 0
+        assert finished[0].tasks_failed == 0

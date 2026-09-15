@@ -297,7 +297,17 @@ class Command(BaseCommand):
                     worker_id=worker_id,
                 )
             except Exception:
-                logger.exception("Worker %s failed to receive a task", worker_id)
+                # No task is named yet, so the record carries the worker's own
+                # context, the same set as Worker started and Worker finished.
+                logger.exception(
+                    "Worker %s failed to receive a task",
+                    worker_id,
+                    extra={
+                        "worker_id": worker_id,
+                        "backend_alias": backend.alias,
+                        "queue_name": queue_name,
+                    },
+                )
                 self.stderr.write(
                     self.style.ERROR("Failed to receive a task, see the logs")
                 )

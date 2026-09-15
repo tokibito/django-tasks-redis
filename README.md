@@ -430,13 +430,15 @@ Every task record carries:
 Completed runs add `status` (`SUCCESSFUL` or `FAILED`) and `duration_ms`, the
 wall time of the function call measured with `time.monotonic()` so it stays
 accurate when a recovery sweep rewrites the stored timestamps. Failures also
-add `error_class`. The worker's own start and finish records carry
-`worker_id`, `backend_alias`, `queue_name`, and — on finish — `tasks_processed`,
-`tasks_failed` and `exit_code`.
+add `error_class`. The worker's own start and finish records, and the record
+for a read from the broker that failed, carry `worker_id`, `backend_alias`,
+`queue_name`, and — on finish — `tasks_processed`, `tasks_failed` and
+`exit_code`.
 
 | Message | Level | When |
 |---------|-------|------|
 | `Worker started` | INFO | The command has resolved its backend |
+| `Worker %s failed to receive a task` | ERROR | The read from the broker raised; no task was taken |
 | `Task started` | INFO | Immediately before the task function is called |
 | `Task completed successfully` | INFO | The task returned |
 | `Task failed` | ERROR | The task raised |
