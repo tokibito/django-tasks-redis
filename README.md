@@ -230,6 +230,9 @@ Options:
   --shutdown-timeout SECS   Maximum wait for the running task after SIGTERM/SIGINT
                             before forcing exit (0=wait indefinitely, default: 0)
   --no-graceful-shutdown    Do not install SIGTERM/SIGINT handlers
+  --empty-exit-code CODE    Exit code when no task was processed (default: 0)
+  --failed-exit-code CODE   Exit code when a task failed or could not be run
+                            (default: 0)
 ```
 
 A worker handles one task at a time. Run several processes to process more,
@@ -508,6 +511,194 @@ A completed task then reads:
 [#2](https://github.com/tokibito/django-tasks-redis/pull/2) reads for its
 duration histogram, so the backend is the single source of truth for how long
 a task took.
+
+## Running from a job scheduler
+
+An on-premise scheduler — JP1, Hinemos, Rundeck, cron, a systemd timer — starts
+`run_redis_tasks` on its own schedule, waits for it to exit, and decides
+what happened from the exit code. That is a different shape from a long-running
+worker, and two things make it work: exit codes the scheduler can act on, and
+a lock so a slow run is not overlapped by the next one.
+
+The scheduler is the trigger; the worker still reads the Redis stream the
+backend writes to.
+
+### Exit codes
+
+By default the command exits 0 whether it ran a hundred tasks, none at all, or
+one that failed — the same as before these options existed. Both options below
+are opt-in, so adding them cannot break an existing `cron` line or Kubernetes
+`Job`.
+
+| Option | Meaning |
+|--------|---------|
+| `--empty-exit-code CODE` | Exit with `CODE` when no task was processed |
+| `--failed-exit-code CODE` | Exit with `CODE` when at least one task failed or could not be run. Takes precedence over `--empty-exit-code` |
+
+```bash
+python manage.py run_redis_tasks --empty-exit-code=4 --failed-exit-code=1
+```
+
+With that line a scheduler sees:
+
+| Exit code | What happened |
+|-----------|---------------|
+| `0` | At least one task ran and every one of them succeeded |
+| `1` | At least one task failed, or the worker could not run it at all |
+| `4` | There was nothing to do |
+| `1` (without the options) | The command itself could not start — bad `--backend`, unreadable settings |
+
+Pick the codes to suit the scheduler. JP1 compares the code against a warning
+threshold per job, so an idle run is usually mapped to a warning code above the
+normal end code and below the abnormal one; `--empty-exit-code=4` with a
+warning threshold of 4 and an error threshold of 8 is a common arrangement.
+
+Both codes must be between 0 and 255 — anything larger is truncated by the
+operating system before the scheduler ever sees it, so the command rejects it
+up front rather than reporting a code you did not choose.
+
+A failure outranks an idle run. A task the worker could not run at all leaves
+the processed count at zero while still being a failure, so both conditions can
+hold at once, and `--failed-exit-code` wins.
+
+What counts as a failure:
+
+- a task that ran and ended `FAILED`
+- a task the worker could not run at all (its code no longer imports, say,
+  or `backend.run_task()` raised before the result was written)
+
+What does not:
+
+- a Redis error during `XREADGROUP` — a connection refused, a `NOGROUP` on
+  startup, a network blip. Those are infrastructure faults rather than task
+  outcomes; they are logged at `ERROR` but leave the exit code alone
+- a broker message naming a task that no longer exists, or one another worker
+  already holds. There was nothing for this worker to do
+
+Tasks that failed are still recorded in Redis with their traceback, so a
+nonzero exit is a prompt to look, not the report itself. `SIGTERM` during a run
+is not an error: the worker finishes the task in hand and reports on what it
+managed to process.
+
+### One run at a time
+
+Multiple workers are safe by design — tasks are claimed with the
+`claim_task()` script, which checks the status and records the attempt
+together, so two workers never run the same task. What a timer-driven setup
+needs to avoid is different: a run that takes longer than the interval, with
+the next launch piling on behind it until the host runs out of memory.
+
+`flock(1)` handles that from outside, and needs nothing from this library:
+
+```bash
+flock -n --conflict-exit-code 3 /var/lock/redis-task-worker.lock \
+    /srv/app/venv/bin/python manage.py run_redis_tasks \
+        --empty-exit-code=4 --failed-exit-code=1
+```
+
+`-n` returns immediately instead of queueing behind the running process, and
+`--conflict-exit-code 3` keeps "a run is already in progress" distinct from the
+codes above — without it `flock` exits 1, which you cannot tell apart from a
+failed task.
+
+Use a lock file per queue if you run a job per queue, since the runs are
+independent:
+
+```bash
+flock -n --conflict-exit-code 3 "/var/lock/redis-task-worker-$QUEUE.lock" \
+    /srv/app/venv/bin/python manage.py run_redis_tasks --queue "$QUEUE"
+```
+
+The lock is about resource use on one host, not correctness. Workers on other
+hosts hold their own lock files and still cannot collide over a task.
+
+### systemd
+
+Two shapes, depending on whether the worker stays up.
+
+**Timer-driven** — the worker starts, drains the queue, and exits. This is the
+equivalent of the cron / JP1 setup above, and the one to reach for when tasks
+are infrequent.
+
+`/etc/systemd/system/redis-task-worker.service`:
+
+```ini
+[Unit]
+Description=Drain the django-tasks-redis queue
+After=network-online.target redis-server.service
+
+[Service]
+Type=oneshot
+User=app
+WorkingDirectory=/srv/app
+Environment=DJANGO_SETTINGS_MODULE=myproject.settings
+ExecStart=/usr/bin/flock -n --conflict-exit-code 3 /var/lock/redis-task-worker.lock \
+    /srv/app/venv/bin/python manage.py run_redis_tasks \
+    --empty-exit-code=4 --failed-exit-code=1
+
+# An idle run and an overlapping run are both expected, not failures.
+SuccessExitStatus=3 4
+```
+
+`/etc/systemd/system/redis-task-worker.timer`:
+
+```ini
+[Unit]
+Description=Drain the django-tasks-redis queue every minute
+
+[Timer]
+OnCalendar=*:0/1
+# Do not fire a burst of catch-up runs after the host was asleep or down.
+Persistent=false
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl enable --now redis-task-worker.timer
+```
+
+`SuccessExitStatus` is what stops systemd from logging an idle minute as a
+failed unit. Leave the code for a failed task out of it, so `systemctl
+--failed` and any alerting built on it still surface real problems.
+
+**Long-running** — the worker stays up and polls. Prefer this when tasks arrive
+continuously, or when you want a task picked up the moment it is enqueued.
+Exit codes are close to meaningless here, since the process is not supposed to
+exit; what matters is the shutdown timeout.
+
+`/etc/systemd/system/redis-task-worker.service`:
+
+```ini
+[Unit]
+Description=django-tasks-redis worker
+After=network-online.target redis-server.service
+
+[Service]
+Type=simple
+User=app
+WorkingDirectory=/srv/app
+Environment=DJANGO_SETTINGS_MODULE=myproject.settings
+ExecStart=/srv/app/venv/bin/python manage.py run_redis_tasks \
+    --continuous --shutdown-timeout=50
+KillSignal=SIGTERM
+# Longer than --shutdown-timeout, so the worker gets to finish its task.
+TimeoutStopSec=60
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Run several by templating the unit (`redis-task-worker@.service` with
+`--queue=%i`) rather than raising a concurrency setting — each process claims
+its own tasks.
+
+See [Graceful Shutdown](#graceful-shutdown) for what happens between `SIGTERM`
+and `TimeoutStopSec`.
 
 ## Django Admin
 

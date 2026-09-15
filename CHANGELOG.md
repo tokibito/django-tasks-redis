@@ -8,6 +8,24 @@ body names the method to override.
 
 ### Added
 
+- **`--empty-exit-code` and `--failed-exit-code` for `run_redis_tasks`.**
+  Both default to 0, so an existing cron line or Kubernetes `Job` sees no
+  change. `--empty-exit-code CODE` exits with `CODE` when no task was
+  processed, `--failed-exit-code CODE` exits with `CODE` when at least
+  one task failed or could not be run, and takes precedence over the
+  empty code. Both are validated to 0–255, the range the operating
+  system actually reports; anything larger is rejected before the
+  command starts. What counts as a failure is a task that ended FAILED
+  or one the worker could not run at all; a Redis error during a
+  fetch is an infrastructure fault, logged at `ERROR` but not counted.
+  The `Worker finished` log record carries the same exit code, so a
+  scheduler and a JSON operator agree on what happened. A new
+  *Running from a job scheduler* section in the README carries over
+  the exit-code table, the `flock` to keep a slow run from being
+  overlapped, and the two systemd unit shapes from django-database-task,
+  with the command name changed to `run_redis_tasks`.
+  ([#24](https://github.com/tokibito/django-tasks-redis/issues/24))
+
 - **Structured logging.** Task and worker records carry their context as
   attributes instead of only being baked into the message, so a JSON
   formatter emits fields an operator can filter on rather than one opaque
