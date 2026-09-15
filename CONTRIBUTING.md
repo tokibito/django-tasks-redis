@@ -71,10 +71,15 @@ run says so in its summary:
   those: anything other than `CTRL_C_EVENT` / `CTRL_BREAK_EVENT` terminates
   the process, so without the skip the run would look like a hang. Installing
   the handlers is covered by `TestGracefulShutdownHandlers` and
-  `TestRunRedisTasksGracefulShutdownOptions`, which run everywhere.
+  `TestRunRedisTasksGracefulShutdownOptions`, which run everywhere, and the
+  shutdown path itself by `TestRunRedisTasksWorkerProcess`, which starts a
+  worker as a child process and signals it the way a supervisor does:
+  `SIGTERM` on POSIX, `CTRL_BREAK_EVENT` to the child's own process group on
+  Windows. That one needs the test process to have a console, which a
+  terminal and the GitHub Actions runner both provide.
 
-To run those tests too, run the suite under WSL against a Redis in the same
-WSL distribution; the two are then a plain Linux run.
+To run the skipped tests too, run the suite under WSL against a Redis in the
+same WSL distribution; the two are then a plain Linux run.
 
 To run part of the suite:
 
