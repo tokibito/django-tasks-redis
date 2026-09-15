@@ -242,3 +242,52 @@ class TestRunRedisTasksLogging:
         # failures, so a non-zero value proves it is wired up.
         assert finished[0].tasks_processed == 2
         assert finished[0].tasks_failed == 1
+
+    def test_failed_to_process_record_carries_task_fields(
+        self, redis_backend, clean_redis, caplog
+    ):
+        """
+        The record a worker leaves when it could not run the task the
+        message named still carries the full task field set, read from
+        the broker message itself.
+        """
+        from io import StringIO
+        from unittest.mock import patch
+
+        from django.core.management import call_command
+
+        from tests.tasks import high_priority_task
+
+        result = high_priority_task.enqueue()
+
+        with caplog.at_level(logging.INFO, logger="django_tasks_redis"):
+            with patch(
+                "django_tasks_redis.backends.RedisTaskBackend.run_task",
+                side_effect=RuntimeError("worker could not run it"),
+            ):
+                call_command("run_redis_tasks", stdout=StringIO(), stderr=StringIO())
+
+        failed = [
+            r
+            for r in caplog.records
+            if r.getMessage().startswith("Worker ")
+            and "failed to process a task" in r.getMessage()
+        ]
+        assert len(failed) == 1
+        record = failed[0]
+        assert record.levelname == "ERROR"
+        assert record.exc_info is not None
+        # The stream entry already holds these; no Redis round trip is made.
+        assert record.task_id == result.id
+        assert record.task_path.endswith("high_priority_task")
+        assert record.queue_name == "default"
+        # Stored as a string in the stream entry; surfaced as an int.
+        assert record.priority == 10
+        assert isinstance(record.priority, int)
+        # Filled in by hand at the call site: the stream entry carries no
+        # backend_name for task_log_fields to read.
+        assert record.backend_alias == redis_backend.alias
+        # The worker in the message and in the field are the same worker.
+        assert record.getMessage() == (
+            f"Worker {record.worker_id} failed to process a task"
+        )

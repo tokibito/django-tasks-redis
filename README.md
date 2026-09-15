@@ -441,6 +441,7 @@ add `error_class`. The worker's own start and finish records carry
 | `Task completed successfully` | INFO | The task returned |
 | `Task failed` | ERROR | The task raised |
 | `Task could not be started` | ERROR | The task function could not be imported |
+| `Worker %s failed to process a task` | ERROR | The worker could not run the task the message named |
 | `Task abandoned` | ERROR | The queue gave up on the task (`mark_task_failed`) |
 | `Worker finished` | INFO | The loop has ended, with the counts and exit code |
 
