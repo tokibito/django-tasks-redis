@@ -106,9 +106,10 @@ jobs:
           if ($hash -ne $env:REDIS_SHA256) {
             throw "Checksum mismatch for $name.zip: got $hash"
           }
-          Expand-Archive "$name.zip" -DestinationPath C:\redis
-          Get-ChildItem C:\redis
-          "C:\redis" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          # The zip holds a single folder named like the zip itself.
+          Expand-Archive "$name.zip" -DestinationPath C:\
+          Get-ChildItem "C:\$name\redis-server.exe" | Out-Null
+          "C:\$name" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Install dependencies
         run: |
@@ -117,7 +118,7 @@ jobs:
 
       - name: Start Redis and run the tests
         run: |
-          $server = Start-Process C:\redis\redis-server.exe -PassThru -RedirectStandardOutput redis.log -RedirectStandardError redis.err
+          $server = Start-Process redis-server -PassThru -RedirectStandardOutput redis.log -RedirectStandardError redis.err
           $deadline = (Get-Date).AddSeconds(30)
           $up = $false
           while (-not $up -and (Get-Date) -lt $deadline) {
