@@ -89,6 +89,13 @@ body names the method to override.
 
 ### Changed
 
+- **The test suite runs on Windows.** The tests that deliver a `SIGTERM` or
+  `SIGINT` to the test process with `os.kill()` are skipped there, because
+  on Windows `os.kill()` terminates the process instead of running the
+  handler, and a whole-suite run used to look like a hang; the tests that
+  only install the handlers now sit in their own classes and run everywhere.
+  CI gained a Windows job against a native Redis build.
+  ([#36](https://github.com/tokibito/django-tasks-redis/issues/36))
 - The HTTP task endpoints run every handler a backend returns from
   `get_auth_handlers()`, not just one. The empty-list-stays-closed behavior
   from 0.2.0 is kept: a backend that returns no handlers still answers `403`

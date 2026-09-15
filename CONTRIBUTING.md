@@ -52,9 +52,29 @@ Test keys carry the prefix `django_tasks_test` and the `clean_redis` fixture
 deletes them before and after each test, so a shared development server is
 fine. Data under other prefixes is left alone.
 
-A full run reports **no skipped tests**. If the run fails before a test
-starts, the server is usually not up: `redis-cli ping` (or `valkey-cli ping`)
-should answer `PONG`.
+A full run on Linux or macOS reports **no skipped tests**. If the run fails
+before a test starts, the server is usually not up: `redis-cli ping` (or
+`valkey-cli ping`) should answer `PONG`.
+
+### On Windows
+
+The suite runs on Windows against a native Redis build (CI uses the
+Chocolatey `redis` package, the [redis-windows](https://github.com/redis-windows/redis-windows)
+build of the upstream source; [Memurai](https://www.memurai.com/) is the
+build Redis itself points to). One group of tests is skipped there, and the
+run says so in its summary:
+
+- `tests/test_shutdown.py::TestGracefulShutdownSignals` and
+  `tests/test_commands.py::TestRunRedisTasksGracefulShutdown` send the test
+  process a real `SIGTERM` or `SIGINT` with `os.kill()` and expect the
+  `GracefulShutdown` handler to run. On Windows `os.kill()` cannot deliver
+  those: anything other than `CTRL_C_EVENT` / `CTRL_BREAK_EVENT` terminates
+  the process, so without the skip the run would look like a hang. Installing
+  the handlers is covered by `TestGracefulShutdownHandlers` and
+  `TestRunRedisTasksGracefulShutdownOptions`, which run everywhere.
+
+To run those tests too, run the suite under WSL against a Redis in the same
+WSL distribution; the two are then a plain Linux run.
 
 To run part of the suite:
 

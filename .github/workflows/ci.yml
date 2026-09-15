@@ -76,6 +76,49 @@ jobs:
         run: |
           pytest tests/ -v
 
+  # Redis has no Linux container here, so the server comes from the Chocolatey
+  # `redis` package, the redis-windows build of the upstream source. The
+  # tests that deliver a signal with os.kill() are skipped on Windows (see
+  # CONTRIBUTING.md); everything else runs.
+  test-windows:
+    runs-on: windows-latest
+    name: test (Windows)
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install Redis
+        run: choco install redis --no-progress -y
+
+      - name: Start Redis
+        run: |
+          Start-Process redis-server -RedirectStandardOutput redis.log -RedirectStandardError redis.err
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Get-Date) -lt $deadline) {
+            if ((redis-cli ping 2>$null) -eq "PONG") {
+              redis-cli info server | Select-String "redis_version"
+              exit 0
+            }
+            Start-Sleep -Seconds 1
+          }
+          Get-Content redis.log, redis.err -ErrorAction SilentlyContinue
+          Write-Error "Redis did not answer PING within 30 seconds"
+          exit 1
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v -rs
+
   lint:
     runs-on: ubuntu-latest
     steps:
