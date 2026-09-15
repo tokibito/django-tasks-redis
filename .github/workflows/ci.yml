@@ -76,6 +76,68 @@ jobs:
         run: |
           pytest tests/ -v
 
+  # A Windows runner has no Linux container, so Redis is the redis-windows
+  # build of the upstream source, pinned by version and checksum. A process
+  # started in one step does not outlive it, so the server is started, used
+  # and stopped inside the test step. The tests that deliver a signal with
+  # os.kill() are skipped on Windows (see CONTRIBUTING.md); the rest runs.
+  test-windows:
+    runs-on: windows-latest
+    name: test (Windows)
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install Redis
+        env:
+          REDIS_VERSION: "8.10.1"
+          # The sha256 digest GitHub reports for the release asset.
+          REDIS_SHA256: "4e8f2f956ed92feadf3f64b4e137ed34026438821e692e7ae22c9bba5976607a"
+        run: |
+          $name = "Redis-$env:REDIS_VERSION-Windows-x64-msys2"
+          $url = "https://github.com/redis-windows/redis-windows/releases/download/$env:REDIS_VERSION/$name.zip"
+          Invoke-WebRequest $url -OutFile "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash
+          if ($hash -ne $env:REDIS_SHA256) {
+            throw "Checksum mismatch for $name.zip: got $hash"
+          }
+          # The zip holds a single folder named like the zip itself.
+          Expand-Archive "$name.zip" -DestinationPath C:\
+          Get-ChildItem "C:\$name\redis-server.exe" | Out-Null
+          "C:\$name" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Start Redis and run the tests
+        run: |
+          $server = Start-Process redis-server -PassThru -RedirectStandardOutput redis.log -RedirectStandardError redis.err
+          $deadline = (Get-Date).AddSeconds(30)
+          $up = $false
+          while (-not $up -and (Get-Date) -lt $deadline) {
+            $up = (redis-cli ping 2>$null) -eq "PONG"
+            if (-not $up) { Start-Sleep -Seconds 1 }
+          }
+          if (-not $up) {
+            Get-Content redis.log, redis.err -ErrorAction SilentlyContinue
+            throw "Redis did not answer PING within 30 seconds"
+          }
+          redis-cli info server | Select-String "redis_version"
+
+          pytest tests/ -v -rs
+          $code = $LASTEXITCODE
+
+          redis-cli shutdown nosave
+          $server.WaitForExit(10000) | Out-Null
+          exit $code
+
   lint:
     runs-on: ubuntu-latest
     steps:

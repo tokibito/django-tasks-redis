@@ -5,6 +5,7 @@ Tests for management commands.
 import json
 import os
 import signal
+import sys
 import threading
 import time
 from io import StringIO
@@ -15,6 +16,15 @@ from django.tasks.base import TaskResultStatus
 
 from django_tasks_redis import executor
 from tests import tasks as test_tasks
+
+# On Windows os.kill() does not deliver SIGTERM or SIGINT to a handler: any
+# signal other than CTRL_C_EVENT / CTRL_BREAK_EVENT terminates the process
+# outright, so a run of these tests there looks like a hang, not a failure.
+# The tasks in tests/tasks.py that signal the process are used here only.
+posix_signals = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.kill() cannot deliver a signal to the test process on Windows",
+)
 
 
 @pytest.mark.django_db
@@ -81,8 +91,11 @@ class TestRunRedisTasksCommand:
         assert "FAILED" in output
 
 
+@posix_signals
 @pytest.mark.django_db
 class TestRunRedisTasksGracefulShutdown:
+    """The command's reaction to a signal the process receives."""
+
     def test_running_task_finishes_before_shutdown(self, clean_redis):
         """A task running when SIGTERM arrives is not interrupted."""
         from tests.tasks import shutdown_signal_task, simple_task
@@ -168,6 +181,23 @@ class TestRunRedisTasksGracefulShutdown:
         # one second steps so the signal is noticed within about one.
         assert elapsed < 3
 
+    def test_task_can_check_shutdown_state(self, clean_redis):
+        """Task functions can stop early with is_shutdown_requested()."""
+        from tests.tasks import shutdown_aware_task
+
+        result = shutdown_aware_task.enqueue(iterations=100)
+
+        call_command("run_redis_tasks", stdout=StringIO())
+
+        task_data = executor.get_task_by_id(result.id)
+        assert task_data["status"] == TaskResultStatus.SUCCESSFUL
+        assert json.loads(task_data["return_value_json"]) < 100
+
+
+@pytest.mark.django_db
+class TestRunRedisTasksGracefulShutdownOptions:
+    """Handler installation and the startup report, no signal sent."""
+
     def test_signal_handlers_are_restored(self, clean_redis):
         """The original signal handlers are restored after the command."""
         original_term = signal.getsignal(signal.SIGTERM)
@@ -217,18 +247,6 @@ class TestRunRedisTasksGracefulShutdown:
         call_command("run_redis_tasks", stdout=out)
 
         assert "Graceful shutdown: enabled (timeout=unlimited)" in out.getvalue()
-
-    def test_task_can_check_shutdown_state(self, clean_redis):
-        """Task functions can stop early with is_shutdown_requested()."""
-        from tests.tasks import shutdown_aware_task
-
-        result = shutdown_aware_task.enqueue(iterations=100)
-
-        call_command("run_redis_tasks", stdout=StringIO())
-
-        task_data = executor.get_task_by_id(result.id)
-        assert task_data["status"] == TaskResultStatus.SUCCESSFUL
-        assert json.loads(task_data["return_value_json"]) < 100
 
 
 @pytest.mark.django_db
