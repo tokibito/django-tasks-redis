@@ -76,10 +76,11 @@ jobs:
         run: |
           pytest tests/ -v
 
-  # Redis has no Linux container here, so the server comes from the Chocolatey
-  # `redis` package, the redis-windows build of the upstream source. The
-  # tests that deliver a signal with os.kill() are skipped on Windows (see
-  # CONTRIBUTING.md); everything else runs.
+  # A Windows runner has no Linux container, so Redis is the redis-windows
+  # build of the upstream source, registered as a Windows service through
+  # the RedisService.exe it ships: a plain background process does not
+  # outlive the step that started it. The tests that deliver a signal with
+  # os.kill() are skipped on Windows (see CONTRIBUTING.md); the rest runs.
   test-windows:
     runs-on: windows-latest
     name: test (Windows)
@@ -92,12 +93,27 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install Redis
-        run: choco install redis --no-progress -y
-
-      - name: Start Redis
+      - name: Install Redis as a Windows service
+        env:
+          REDIS_VERSION: "8.10.1"
+          # The sha256 digest GitHub reports for the release asset.
+          REDIS_SHA256: "8d7710c858eb9ef24685d040272fa42f6b045906cbab14dc635697a20303af1b"
         run: |
-          Start-Process redis-server -RedirectStandardOutput redis.log -RedirectStandardError redis.err
+          $name = "Redis-$env:REDIS_VERSION-Windows-x64-msys2-with-Service"
+          $url = "https://github.com/redis-windows/redis-windows/releases/download/$env:REDIS_VERSION/$name.zip"
+          Invoke-WebRequest $url -OutFile "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash
+          if ($hash -ne $env:REDIS_SHA256) {
+            throw "Checksum mismatch for $name.zip: got $hash"
+          }
+          Expand-Archive "$name.zip" -DestinationPath C:\
+          New-Item -ItemType Directory -Force C:\redis-data | Out-Null
+          & "C:\$name\RedisService.exe" install --port 6379 --dir C:\redis-data
+          Start-Service Redis
+          "C:\$name" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Wait for Redis
+        run: |
           $deadline = (Get-Date).AddSeconds(30)
           while ((Get-Date) -lt $deadline) {
             if ((redis-cli ping 2>$null) -eq "PONG") {
@@ -106,7 +122,7 @@ jobs:
             }
             Start-Sleep -Seconds 1
           }
-          Get-Content redis.log, redis.err -ErrorAction SilentlyContinue
+          Get-Service Redis | Format-List
           Write-Error "Redis did not answer PING within 30 seconds"
           exit 1
 
