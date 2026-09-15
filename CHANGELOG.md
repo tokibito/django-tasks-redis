@@ -25,7 +25,6 @@ body names the method to override.
   overlapped, and the two systemd unit shapes from django-database-task,
   with the command name changed to `run_redis_tasks`.
   ([#24](https://github.com/tokibito/django-tasks-redis/issues/24))
-
 - **Structured logging.** Task and worker records carry their context as
   attributes instead of only being baked into the message, so a JSON
   formatter emits fields an operator can filter on rather than one opaque
