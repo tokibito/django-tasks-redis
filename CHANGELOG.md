@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 **`get_auth_handler()` is gone.** A project that overrides the singular hook
 has to move to `get_auth_handlers()` or every call answers `403`; the `403`
@@ -50,10 +50,13 @@ body names the method to override.
   `Task abandoned` record written by `mark_task_failed()` carries the same
   fields. `run_redis_tasks` emits `Worker started` and `Worker finished`
   records, the latter with `tasks_processed`, `tasks_failed` and
-  `exit_code`. A new *Structured logging* section in the README carries
-  over the dependency-free `JSONFormatter` example and the `LOGGING`
-  configuration from django-database-task, with the logger name changed
-  to `django_tasks_redis`. `duration_ms` is also the single value a
+  `exit_code`; the records it writes when the read from the broker raised,
+  or when it could not run the task a message named, carry the same fields
+  as the records around them. A new *Structured logging* section in the
+  README lists every record with its level, and carries over the
+  dependency-free `JSONFormatter` example and the `LOGGING` configuration
+  from django-database-task, with the logger name changed to
+  `django_tasks_redis`. `duration_ms` is also the single value a
   metrics integration reads for its duration histogram, so the backend
   is the one place that measures it.
   ([#23](https://github.com/tokibito/django-tasks-redis/issues/23))
@@ -134,11 +137,11 @@ body names the method to override.
   `run_task()` later wrote RUNNING with a plain `HSET`; a request to
   `execute/<id>/` (or any `run_task_by_id()` caller) landing in between
   claimed the task too, and both executed it. `run_task()` now claims the
-  task itself, in one script that checks the status and records the attempt
-  together, and returns `None` when the claim is lost. The worker
-  acknowledges such a message like any other for a task that is no longer
-  READY and moves on to the next one; `run_task_by_id()` uses the same claim
-  instead of one of its own.
+  task itself, through a new `claim_task()` script that checks the status
+  and records the attempt together, and returns `None` when the claim is
+  lost. The worker acknowledges such a message like any other for a task
+  that is no longer READY and moves on to the next one; `run_task_by_id()`
+  uses the same claim instead of one of its own.
   ([#18](https://github.com/tokibito/django-tasks-redis/issues/18))
 - **Dead consumers are removed from the consumer group.** Every
   `run_redis_tasks` start added a consumer named after its worker id, and
