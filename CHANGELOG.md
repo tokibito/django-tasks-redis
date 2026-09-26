@@ -60,8 +60,9 @@ deployment needs nothing.
   `rebuild_redis_status_index --help` ended in `TypeError: expected string or
   bytes-like object, got '__proxy__'` instead of printing the usage text: the
   command description was a lazy translation, which argparse cannot format as
-  the parser description. The description is now translated when the parser
-  is built, so it is still shown in Japanese under a Japanese locale. The
+  the parser description — nor, on Python 3.14, as an option's help. The
+  description and the option help are now translated when the parser is
+  built, so they are still shown in Japanese under a Japanese locale. The
   commands themselves were not affected.
   ([#54](https://github.com/tokibito/django-tasks-redis/issues/54))
 

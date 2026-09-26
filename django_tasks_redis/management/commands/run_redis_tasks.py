@@ -24,8 +24,7 @@ from time import monotonic
 from django.core.management.base import BaseCommand
 from django.tasks import task_backends
 from django.tasks.base import TaskResultStatus
-from django.utils.translation import gettext
-from django.utils.translation import gettext_lazy as _
+from django.utils.translation import gettext as _
 
 from django_tasks_redis.backends import task_log_fields
 from django_tasks_redis.shutdown import GracefulShutdown, signal_name
@@ -55,9 +54,10 @@ def _exit_code_argument(value):
 class Command(BaseCommand):
     @property
     def help(self) -> str:
-        # argparse formats the parser description with a regex, which a
-        # lazy string cannot go through, so translate it here (#54).
-        return gettext("Run a worker to process Redis tasks")
+        # argparse formats the description and the option help with a regex,
+        # which a lazy string cannot go through, so every string here is
+        # translated when the parser is built rather than at import time (#54).
+        return _("Run a worker to process Redis tasks")
 
     def add_arguments(self, parser):
         parser.add_argument(

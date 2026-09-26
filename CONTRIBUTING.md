@@ -116,11 +116,12 @@ fails the lint job rather than the release.
 
 A few things are easy to forget:
 
-- **Translations.** User-visible strings in `models.py`, `admin.py`,
-  `apps.py` and the management commands go through `gettext_lazy`, and there
-  is a Japanese catalogue. The one exception is a command's `help`, which
-  argparse cannot take lazily: it is a property returning `gettext(...)`. Adding a string means updating it, from inside the
-  app directory:
+- **Translations.** User-visible strings in `models.py`, `admin.py` and
+  `apps.py` go through `gettext_lazy`, and there is a Japanese catalogue. The
+  management commands use `gettext` instead, because argparse cannot format a
+  lazy string; a command's `help` is a property so that it is translated when
+  the parser is built. Adding a string means updating the catalogue, from
+  inside the app directory:
 
   ```bash
   cd django_tasks_redis
