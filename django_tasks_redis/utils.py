@@ -6,7 +6,7 @@ import json
 import logging
 import socket
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import redis
@@ -269,3 +269,64 @@ def priority_to_level(priority: int) -> str:
     elif priority < 0:
         return "low"
     return "normal"
+
+
+def get_status_index_key(
+    key_prefix: str, backend_name: str, status: str, queue_name: str | None = None
+) -> str:
+    """
+    Generate Redis Sorted Set key for the tasks in one status.
+
+    The member is the task id and the score is the time the task entered the
+    status, so a count is a ZCARD and the entries whose hash has expired can
+    be pruned by score. Without a queue name the key covers every queue.
+
+    Args:
+        key_prefix: Key prefix from settings.
+        backend_name: Backend name.
+        status: Task status value (e.g. "READY").
+        queue_name: Queue name, or None for the backend-wide index.
+
+    Returns:
+        Status index key string.
+    """
+    if queue_name is None:
+        return f"{key_prefix}:{backend_name}:status_index:{status}"
+    return f"{key_prefix}:{backend_name}:{queue_name}:status_index:{status}"
+
+
+def get_status_index_built_key(key_prefix: str, backend_name: str) -> str:
+    """
+    Generate the key that marks the status index as built.
+
+    It is set by ``rebuild_status_index()``, or on a backend that has never
+    stored a result; until it exists, the status counts are read from the
+    result hashes as they were before the index existed.
+
+    Args:
+        key_prefix: Key prefix from settings.
+        backend_name: Backend name.
+
+    Returns:
+        Marker key string.
+    """
+    return f"{key_prefix}:{backend_name}:status_index_built"
+
+
+def deserialize_timestamp(value: float) -> datetime:
+    """
+    Turn a Unix timestamp, such as a sorted set score, into a datetime.
+
+    Like :func:`deserialize_datetime`, the result compares with
+    ``timezone.now()``: aware in UTC under USE_TZ, naive in the current time
+    zone otherwise.
+
+    Args:
+        value: Seconds since the epoch.
+
+    Returns:
+        Datetime object.
+    """
+    if settings.USE_TZ:
+        return datetime.fromtimestamp(value, tz=UTC)
+    return datetime.fromtimestamp(value)

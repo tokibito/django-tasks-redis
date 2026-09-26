@@ -2,8 +2,34 @@
 
 ## Unreleased
 
+**A deployment upgrading with stored results runs
+`python manage.py rebuild_redis_status_index` once**, after every process is
+on this version. Until then the task counts are read from every stored result,
+as before, and a warning naming the command is logged once per process. A new
+deployment needs nothing.
+
 ### Added
 
+- **A status index behind the task counts.** `get_status_counts()`,
+  `get_task_counts()`, `get_pending_task_count()` and `get_queue_stats()`
+  read one sorted set per status — for the backend and for each queue,
+  holding the tasks in that status scored by the time they entered it —
+  instead of every stored result, so a call costs the same with a hundred
+  thousand results as with ten, and a metrics scrape every few seconds no
+  longer keeps Redis busy with `SCAN`s. Every status write moves the task in
+  the index within the same script or transaction as the hash write (the
+  claim, the finish, the release by the stale sweep, the abandon, the reset,
+  the delete), sweeping it out of the other statuses' sets, so the index
+  follows the hashes under concurrent workers. An entry whose result has
+  expired is dropped once it is older than the TTL of its status, on every
+  read and whenever its set is written to. The READY set is scored by the
+  time the task started waiting (`max(enqueued_at, run_after)`), so the
+  queue age of `get_queue_stats()` comes from the set's two ends. The new
+  `rebuild_redis_status_index` command and `executor.rebuild_status_index()`
+  index the results a deployment stored before the index existed; each
+  result is indexed by a script that reads its status again first, so
+  workers can keep running throughout.
+  ([#48](https://github.com/tokibito/django-tasks-redis/issues/48))
 - **`purge_completed_tasks()` can filter by task path.** A new `task_path`
   argument limits the purge to the results of one task, so a deployment that
   keeps results for a long time in general can still clear a single noisy

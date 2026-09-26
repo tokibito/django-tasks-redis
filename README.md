@@ -34,6 +34,7 @@ sequenceDiagram
     Note over Backend,Redis: One transaction
     Backend->>Redis: HSET task data (status=READY)
     Backend->>Redis: SADD to results index
+    Backend->>Redis: ZADD to the READY status index
     alt run_after in the future
         Backend->>Redis: ZADD to delayed set
     else Ready to run
@@ -47,12 +48,12 @@ sequenceDiagram
     Redis-->>Worker: Message with task_id
     Worker->>Redis: HGET task data
     Redis-->>Worker: Task data
-    Worker->>Redis: Claim: status READY→RUNNING<br/>(one script, and a lost claim is acknowledged and skipped)
+    Worker->>Redis: Claim: status READY→RUNNING<br/>(one script, moves the task in the status index,<br/>and a lost claim is acknowledged and skipped)
     Worker->>Worker: Execute task function
     alt Success
-        Worker->>Redis: HSET status=SUCCESSFUL,<br/>return_value, finished_at
+        Worker->>Redis: HSET status=SUCCESSFUL,<br/>return_value, finished_at<br/>(one transaction with the status index move)
     else Failure
-        Worker->>Redis: HSET status=FAILED,<br/>errors, finished_at
+        Worker->>Redis: HSET status=FAILED,<br/>errors, finished_at<br/>(one transaction with the status index move)
     end
     Worker->>Redis: XACK + XDEL (acknowledge and delete the entry)
 
@@ -259,6 +260,26 @@ Options:
   --dry-run               Only show count, don't delete
   --backend BACKEND_NAME  Backend name (default: default)
 ```
+
+### rebuild_redis_status_index
+
+Index every stored result under its status:
+
+```bash
+python manage.py rebuild_redis_status_index [options]
+
+Options:
+  --batch-size N          Tasks read per round trip (default: REDIS_SCAN_BATCH_SIZE)
+  --backend BACKEND_NAME  Backend name (default: default)
+```
+
+The status index is what the task counts and the queue statistics are read
+from (see [Monitoring](#monitoring)). It is written with every task, so a new
+deployment never needs this command. A deployment that stored results before
+the index existed runs it once, after every process is on a version that
+writes the index, and reads its counts from the stored results until then.
+Workers can keep running while it does: a task that changes status under the
+rebuild is left to the write that changed it.
 
 ## Graceful Shutdown
 
@@ -626,6 +647,24 @@ whose time has not come is READY in the store, so it is part of the pending
 count, but its waiting time starts at its `run_after`, which can lie in the
 future: a task that is not due yet does not read as queue age, and while only
 such tasks are pending, the wait printed above is negative.
+
+The counts and the waiting times are read from a status index — one sorted
+set per status, for the backend and for each queue, holding the tasks in that
+status scored by the time they entered it — so a call costs the same however
+many results are stored, and a metrics scrape every few seconds does not keep
+Redis busy reading every result. Each status write moves the task in the
+index within the same script or transaction, so the index follows the hashes
+under concurrent workers, and an entry whose result has expired is dropped
+once it is older than the TTL of its status (`REDIS_RESULT_TTL` for READY and
+RUNNING, `REDIS_COMPLETED_TASK_TTL` for the rest). Shortening a TTL therefore
+takes results stored under the longer one out of the counts before they
+expire, and they stay listed in the admin until they do.
+
+A deployment that stored results before the index existed keeps reading its
+counts from every stored result, as before, and logs a warning naming
+`rebuild_redis_status_index` (see [Management Commands](#management-commands));
+run it once, after every process is on a version that writes the index, and
+the counts come from the index from then on. A new deployment needs nothing.
 
 Task duration is read from Django's `task_finished` signal, which the backend
 sends with the finished `TaskResult` — for a run that failed as well as one
@@ -1040,6 +1079,9 @@ deleted = executor.purge_completed_tasks(days=7)
 
 # Purge one task path only
 deleted = executor.purge_completed_tasks(days=7, task_path="myapp.tasks.cleanup")
+
+# Index the results stored before the status index existed (once, after upgrading)
+indexed = executor.rebuild_status_index()
 ```
 
 ### The stream broker

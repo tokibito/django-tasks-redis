@@ -460,3 +460,45 @@ class TestPurgeCompletedRedisTasksCommand:
 
         output = out.getvalue()
         assert "Statuses: SUCCESSFUL" in output
+
+
+@pytest.mark.django_db
+class TestRebuildRedisStatusIndexCommand:
+    """Tests for rebuild_redis_status_index management command."""
+
+    def test_rebuild_indexes_the_stored_results(self, redis_backend, clean_redis):
+        """Results stored without the index are counted once it is rebuilt."""
+        from django_tasks_redis.utils import get_status_index_built_key
+
+        test_tasks.simple_task.enqueue(1, 1)
+        test_tasks.simple_task.enqueue(2, 2)
+        client = redis_backend.get_client()
+        index_keys = [
+            key
+            for key in client.keys(f"{redis_backend.key_prefix}:*")
+            if "status_index" in key
+        ]
+        client.delete(*index_keys)
+        redis_backend._status_index_built = False
+
+        out = StringIO()
+        call_command("rebuild_redis_status_index", stdout=out)
+
+        output = out.getvalue()
+        assert "Rebuilding the status index of backend: default" in output
+        assert "Indexed 2 task(s)" in output
+        assert client.exists(
+            get_status_index_built_key(redis_backend.key_prefix, redis_backend.alias)
+        )
+        assert executor.get_task_counts()[TaskResultStatus.READY] == 2
+
+    def test_rebuild_honours_batch_size(self, redis_backend, clean_redis):
+        """The batch size is handed to the backend."""
+        from unittest import mock
+
+        with mock.patch.object(
+            type(redis_backend), "rebuild_status_index", return_value=0
+        ) as rebuild:
+            call_command("rebuild_redis_status_index", batch_size=7, stdout=StringIO())
+
+        rebuild.assert_called_once_with(batch_size=7)

@@ -186,8 +186,8 @@ class TestExecutor:
         from django_tasks_redis.utils import get_result_key, serialize_datetime
         from tests.tasks import simple_task
 
-        old_time = timezone.now() - timedelta(hours=2)
-        mid_time = timezone.now() - timedelta(hours=1)
+        old_time = timezone.now() - timedelta(minutes=20)
+        mid_time = timezone.now() - timedelta(minutes=10)
         new_time = timezone.now()
 
         results = [simple_task.enqueue(i, i) for i in range(3)]
@@ -197,6 +197,9 @@ class TestExecutor:
                 redis_backend.key_prefix, redis_backend.alias, result.id
             )
             client.hset(result_key, "enqueued_at", serialize_datetime(value))
+
+        # The hash was edited behind the index: rebuild it from the hashes.
+        redis_backend.rebuild_status_index()
 
         stats = executor.get_queue_stats()
 
@@ -223,6 +226,9 @@ class TestExecutor:
         )
         client.hset(result_key, "enqueued_at", serialize_datetime(old_time))
 
+        # The hash was edited behind the index: rebuild it from the hashes.
+        redis_backend.rebuild_status_index()
+
         stats = executor.get_queue_stats()
 
         assert stats["pending_count"] == 1
@@ -239,8 +245,8 @@ class TestExecutor:
         from django_tasks_redis.utils import get_result_key, serialize_datetime
         from tests.tasks import simple_task
 
-        old_time = timezone.now() - timedelta(hours=2)
-        due_time = timezone.now() - timedelta(hours=1)
+        old_time = timezone.now() - timedelta(minutes=20)
+        due_time = timezone.now() - timedelta(minutes=10)
 
         result = simple_task.enqueue(1, 1)
         client = redis_backend.get_client()
@@ -254,6 +260,9 @@ class TestExecutor:
                 "run_after": serialize_datetime(due_time),
             },
         )
+
+        # The hash was edited behind the index: rebuild it from the hashes.
+        redis_backend.rebuild_status_index()
 
         stats = executor.get_queue_stats()
 
@@ -291,6 +300,9 @@ class TestExecutor:
             },
         )
 
+        # The hash was edited behind the index: rebuild it from the hashes.
+        redis_backend.rebuild_status_index()
+
         stats = executor.get_queue_stats()
 
         assert stats["pending_count"] == 1
@@ -327,6 +339,9 @@ class TestExecutor:
             },
         )
 
+        # The hash was edited behind the index: rebuild it from the hashes.
+        redis_backend.rebuild_status_index()
+
         stats = executor.get_queue_stats()
 
         assert stats["pending_count"] == 1
@@ -356,8 +371,8 @@ class TestExecutor:
         from django_tasks_redis.utils import get_result_key, serialize_datetime
         from tests.tasks import email_task, simple_task
 
-        old_time = timezone.now() - timedelta(hours=2)
-        new_time = timezone.now() - timedelta(hours=1)
+        old_time = timezone.now() - timedelta(minutes=20)
+        new_time = timezone.now() - timedelta(minutes=10)
 
         default_result = simple_task.enqueue(1, 1)
         email_result = email_task.enqueue("to@example.com", "Hi", "body")
@@ -370,6 +385,9 @@ class TestExecutor:
                 redis_backend.key_prefix, redis_backend.alias, result.id
             )
             client.hset(result_key, "enqueued_at", serialize_datetime(value))
+
+        # The hash was edited behind the index: rebuild it from the hashes.
+        redis_backend.rebuild_status_index()
 
         stats = executor.get_queue_stats(queue_name="emails")
 

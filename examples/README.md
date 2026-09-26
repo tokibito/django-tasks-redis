@@ -159,6 +159,15 @@ python manage.py purge_completed_redis_tasks --dry-run
 python manage.py purge_completed_redis_tasks --status SUCCESSFUL
 ```
 
+### rebuild_redis_status_index
+
+Index the results stored before the status index existed (once, after
+upgrading; a new project never needs it):
+
+```bash
+python manage.py rebuild_redis_status_index
+```
+
 ## Task Examples
 
 See `demo_app/tasks.py` for task definitions:

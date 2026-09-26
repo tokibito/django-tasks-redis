@@ -23,16 +23,29 @@ from .exceptions import TaskAbandoned
 from .utils import (
     deserialize_datetime,
     deserialize_json,
+    deserialize_timestamp,
     get_delayed_key,
     get_redis_client,
     get_result_key,
     get_results_index_key,
+    get_status_index_built_key,
+    get_status_index_key,
     priority_to_level,
     serialize_datetime,
     serialize_json,
 )
 
 logger = logging.getLogger("django_tasks_redis")
+
+#: The statuses the status index tracks, in the order the scripts below take
+#: their sets: KEYS[2..5] are the backend-wide sets, KEYS[6..9] the sets of the
+#: task's queue.
+STATUS_INDEX_ORDER = (
+    TaskResultStatus.READY,
+    TaskResultStatus.RUNNING,
+    TaskResultStatus.SUCCESSFUL,
+    TaskResultStatus.FAILED,
+)
 
 
 def task_log_fields(task_data, worker_id=None, **extra):
@@ -92,26 +105,63 @@ def _elapsed_ms(started_monotonic):
     return round((time.monotonic() - started_monotonic) * 1000)
 
 
+# Move a task to `new_status` in the status index: out of the sets of every
+# other status and into the two sets of the new one. Every other set is swept,
+# not just the set of the status the task was read in, so whichever of two
+# racing writers lands last leaves the index matching the hash it wrote.
+# Entries older than `cutoff` have expired with their hash, and nothing else
+# takes them out, so the sets being added to are pruned on the way; '' is a
+# result that never expires.
+#
+# KEYS[2..5] the backend-wide sets, KEYS[6..9] the sets of the task's queue,
+# both in STATUS_INDEX_ORDER.
+_INDEX_STATUS = (
+    "local STATUSES = {"
+    + ", ".join(f"'{status}'" for status in STATUS_INDEX_ORDER)
+    + "}"
+    + """
+local function index_status(task_id, new_status, score, cutoff)
+    for i, status in ipairs(STATUSES) do
+        for _, key in ipairs({KEYS[1 + i], KEYS[5 + i]}) do
+            if status == new_status then
+                if cutoff ~= '' then
+                    redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+                end
+                redis.call('ZADD', key, score, task_id)
+            else
+                redis.call('ZREM', key, task_id)
+            end
+        end
+    end
+end
+"""
+)
+
 # Claim a task for a run: move it to RUNNING and record the attempt, but only
 # from one of the statuses the caller expects. Check and write in one step, or a
 # worker that has read the message and an external trigger for the same task
 # both see READY and both run it.
 #
-# KEYS[1] the task hash
+# KEYS[1] the task hash, KEYS[2..9] the status index sets
 # ARGV[1] the time of the attempt (ISO 8601)
 # ARGV[2] the worker id, or "" to record none
 # ARGV[3] the status to move to (RUNNING)
-# ARGV[4..] the statuses the task may be claimed from
+# ARGV[4] the task id
+# ARGV[5] the time of the attempt as the index score (Unix timestamp)
+# ARGV[6] the index cutoff, or ""
+# ARGV[7..] the statuses the task may be claimed from
 #
 # Returns 1 when claimed, 0 when the task is in another status, -1 when there is
 # no such task.
-_CLAIM_TASK = """
+_CLAIM_TASK = (
+    _INDEX_STATUS
+    + """
 local status = redis.call('HGET', KEYS[1], 'status')
 if status == false then
     return -1
 end
 local allowed = false
-for i = 4, #ARGV do
+for i = 7, #ARGV do
     if status == ARGV[i] then
         allowed = true
     end
@@ -136,24 +186,68 @@ if ARGV[2] ~= '' then
     fields[#fields + 1] = cjson.encode(worker_ids)
 end
 redis.call('HSET', KEYS[1], unpack(fields))
+index_status(ARGV[4], ARGV[3], ARGV[5], ARGV[6])
 return 1
 """
+)
 
 # Read and write in one step, or two callers both see an executable task and
 # both run it.
-_TRANSITION_TASK_STATUS = """
+#
+# KEYS[1] the task hash, KEYS[2..9] the status index sets
+# ARGV[1] the status to move to
+# ARGV[2] the task id
+# ARGV[3] the time of the move as the index score (Unix timestamp)
+# ARGV[4] the index cutoff, or ""
+# ARGV[5..] the statuses the task may be moved from
+_TRANSITION_TASK_STATUS = (
+    _INDEX_STATUS
+    + """
 local status = redis.call('HGET', KEYS[1], 'status')
 if status == false then
     return 0
 end
-for i = 2, #ARGV do
+for i = 5, #ARGV do
     if status == ARGV[i] then
         redis.call('HSET', KEYS[1], 'status', ARGV[1])
+        index_status(ARGV[2], ARGV[1], ARGV[3], ARGV[4])
         return 1
     end
 end
 return 0
 """
+)
+
+# Index a task under the status it was read in, if that is still its status:
+# a task that moved on in between was indexed by the transition that moved
+# it, and re-adding it under the old status would count it twice. A task
+# whose hash is gone is taken out of every set.
+#
+# KEYS[1] the task hash, KEYS[2..9] the status index sets
+# ARGV[1] the task id
+# ARGV[2] the status the task was read in
+# ARGV[3] the index score (Unix timestamp)
+# ARGV[4] the index cutoff, or ""
+#
+# Returns 1 when indexed, 0 when the status has changed, -1 when the hash is
+# gone.
+_INDEX_TASK = (
+    _INDEX_STATUS
+    + """
+local status = redis.call('HGET', KEYS[1], 'status')
+if status == false then
+    for i = 2, 9 do
+        redis.call('ZREM', KEYS[i], ARGV[1])
+    end
+    return -1
+end
+if status ~= ARGV[2] then
+    return 0
+end
+index_status(ARGV[1], ARGV[2], ARGV[3], ARGV[4])
+return 1
+"""
+)
 
 
 class RedisTaskBackend(BaseTaskBackend):
@@ -189,6 +283,11 @@ class RedisTaskBackend(BaseTaskBackend):
         # forever. Counts starts, not deliveries. 0 disables it.
         self.max_deliveries = self.options.get("REDIS_MAX_DELIVERIES", 5)
         self.scan_batch_size = self.options.get("REDIS_SCAN_BATCH_SIZE", 500)
+
+        # Whether the status index is known to cover every stored result; see
+        # has_status_index(). Only a positive answer is remembered.
+        self._status_index_built = False
+        self._status_index_warned = False
 
         self.broker = self.create_broker()
 
@@ -345,6 +444,13 @@ class RedisTaskBackend(BaseTaskBackend):
             # Outside the transaction below: idempotent, and XADD needs it first.
             self.broker.ensure_consumer_group(stream_key)
 
+        # A backend that has never stored a result has nothing to rebuild the
+        # status index from. Settle that before the first result exists, so
+        # the index is trusted from the first task on and no rebuild is asked
+        # for. One round trip per process.
+        if not self._status_index_built:
+            self.has_status_index()
+
         # One transaction: a task stored and indexed but never queued would
         # never run, and nothing would report it.
         pipeline = client.pipeline()
@@ -360,6 +466,18 @@ class RedisTaskBackend(BaseTaskBackend):
 
         # Add to results index for iteration
         pipeline.sadd(results_index_key, task_id)
+
+        # Index the task as READY from the time it starts waiting: now, or
+        # run_after for a delayed task. That is also when the hash's TTL
+        # starts counting for a delayed task, so the entry expires with it.
+        self._index_status(
+            pipeline,
+            task_id,
+            task.queue_name,
+            TaskResultStatus.READY,
+            task.run_after if is_delayed else now,
+            now,
+        )
 
         if is_delayed:
             # Add to delayed sorted set
@@ -464,13 +582,25 @@ class RedisTaskBackend(BaseTaskBackend):
         if from_statuses is None:
             from_statuses = [TaskResultStatus.READY]
 
-        claim = self.get_client().register_script(_CLAIM_TASK)
+        client = self.get_client()
+        result_key = get_result_key(self.key_prefix, self.alias, task_id)
+
+        # The queue names the index sets the script writes, and a script is
+        # given every key it touches. A task never changes queue, so reading
+        # it ahead of the script is safe.
+        queue_name = client.hget(result_key, "queue_name")
+        if queue_name is None:
+            raise TaskResultDoesNotExist(task_id)
+
+        now = timezone.now()
+        claim = client.register_script(_CLAIM_TASK)
         outcome = claim(
-            keys=[get_result_key(self.key_prefix, self.alias, task_id)],
+            keys=[result_key, *self._status_index_keys(queue_name)],
             args=[
-                serialize_datetime(timezone.now()),
+                serialize_datetime(now),
                 worker_id or "",
                 TaskResultStatus.RUNNING,
+                *self._script_index_args(task_id, TaskResultStatus.RUNNING, now),
                 *from_statuses,
             ],
         )
@@ -528,7 +658,7 @@ class RedisTaskBackend(BaseTaskBackend):
                 exception_class_path=f"{type(e).__module__}.{type(e).__qualname__}",
                 traceback=traceback.format_exc(),
             )
-            self._record_error(result_key, task_data, error)
+            self._record_error(task_id, task_data, error)
             logger.exception(
                 "Task could not be started: id=%s error=%s",
                 task_id,
@@ -577,20 +707,32 @@ class RedisTaskBackend(BaseTaskBackend):
             # Normalize return value for JSON serialization
             normalized_return_value = normalize_json(return_value)
 
-            # Success
-            finished_at = serialize_datetime(timezone.now())
-            client.hset(
+            # Success. One transaction with the index move, so the index
+            # never shows a status the hash does not.
+            finished_at = timezone.now()
+            pipeline = client.pipeline()
+            pipeline.hset(
                 result_key,
                 mapping={
                     "status": TaskResultStatus.SUCCESSFUL,
                     "return_value_json": serialize_json(normalized_return_value),
-                    "finished_at": finished_at,
+                    "finished_at": serialize_datetime(finished_at),
                 },
             )
 
             # Set TTL for completed task
             if self.completed_task_ttl > 0:
-                client.expire(result_key, self.completed_task_ttl)
+                pipeline.expire(result_key, self.completed_task_ttl)
+
+            self._index_status(
+                pipeline,
+                task_id,
+                task_data.get("queue_name", "default"),
+                TaskResultStatus.SUCCESSFUL,
+                finished_at,
+                finished_at,
+            )
+            pipeline.execute()
 
             # Refresh and return result
             task_data = client.hgetall(result_key)
@@ -615,7 +757,7 @@ class RedisTaskBackend(BaseTaskBackend):
                 exception_class_path=f"{type(e).__module__}.{type(e).__qualname__}",
                 traceback=traceback.format_exc(),
             )
-            self._record_error(result_key, task_data, error)
+            self._record_error(task_id, task_data, error)
 
             # Refresh and return result
             task_data = client.hgetall(result_key)
@@ -636,16 +778,17 @@ class RedisTaskBackend(BaseTaskBackend):
             task_finished.send(sender=self.__class__, task_result=final_result)
             return final_result
 
-    def _record_error(self, result_key, task_data, error):
+    def _record_error(self, task_id, task_data, error):
         """
         Persist a terminal FAILED state with `error` appended to the task.
 
         Args:
-            result_key: Redis key of the task hash.
+            task_id: Task ID string.
             task_data: Task data read before the failure.
             error: TaskError to append.
         """
         client = self.get_client()
+        result_key = get_result_key(self.key_prefix, self.alias, task_id)
 
         errors = deserialize_json(task_data.get("errors_json", "[]")) or []
         errors.append(
@@ -655,18 +798,32 @@ class RedisTaskBackend(BaseTaskBackend):
             }
         )
 
-        client.hset(
+        # One transaction with the index move, so the index never shows a
+        # status the hash does not.
+        finished_at = timezone.now()
+        pipeline = client.pipeline()
+        pipeline.hset(
             result_key,
             mapping={
                 "status": TaskResultStatus.FAILED,
                 "errors_json": serialize_json(errors),
-                "finished_at": serialize_datetime(timezone.now()),
+                "finished_at": serialize_datetime(finished_at),
             },
         )
 
         # Set TTL for completed task
         if self.completed_task_ttl > 0:
-            client.expire(result_key, self.completed_task_ttl)
+            pipeline.expire(result_key, self.completed_task_ttl)
+
+        self._index_status(
+            pipeline,
+            task_id,
+            task_data.get("queue_name", "default"),
+            TaskResultStatus.FAILED,
+            finished_at,
+            finished_at,
+        )
+        pipeline.execute()
 
     def transition_task_status(self, task_id, to_status, from_statuses):
         """
@@ -684,12 +841,24 @@ class RedisTaskBackend(BaseTaskBackend):
             True if this caller made the transition.
         """
         client = self.get_client()
+        result_key = get_result_key(self.key_prefix, self.alias, task_id)
+
+        # The queue names the index sets the script writes; see claim_task().
+        queue_name = client.hget(result_key, "queue_name")
+        if queue_name is None:
+            return False
+
+        now = timezone.now()
         transition = client.register_script(_TRANSITION_TASK_STATUS)
 
         return bool(
             transition(
-                keys=[get_result_key(self.key_prefix, self.alias, task_id)],
-                args=[to_status, *from_statuses],
+                keys=[result_key, *self._status_index_keys(queue_name)],
+                args=[
+                    to_status,
+                    *self._script_index_args(task_id, to_status, now),
+                    *from_statuses,
+                ],
             )
         )
 
@@ -729,7 +898,7 @@ class RedisTaskBackend(BaseTaskBackend):
         task_data = client.hgetall(result_key)
         abandoned_path = f"{TaskAbandoned.__module__}.{TaskAbandoned.__qualname__}"
         self._record_error(
-            result_key,
+            task_id,
             task_data,
             TaskError(
                 exception_class_path=abandoned_path,
@@ -897,8 +1066,16 @@ class RedisTaskBackend(BaseTaskBackend):
         result_key = get_result_key(self.key_prefix, self.alias, task_id)
         results_index_key = get_results_index_key(self.key_prefix, self.alias)
 
-        deleted = client.delete(result_key)
-        client.srem(results_index_key, task_id)
+        # None when the hash is already gone: the backend-wide index sets are
+        # still swept, the queue's are left to expire by score.
+        queue_name = client.hget(result_key, "queue_name")
+
+        pipeline = client.pipeline()
+        pipeline.delete(result_key)
+        pipeline.srem(results_index_key, task_id)
+        for key in self._status_index_keys(queue_name):
+            pipeline.zrem(key, task_id)
+        deleted, *_replies = pipeline.execute()
 
         return deleted > 0
 
@@ -919,7 +1096,11 @@ class RedisTaskBackend(BaseTaskBackend):
         if not task_data:
             return False
 
-        client.hset(
+        # The task starts waiting again now: one transaction with the index
+        # move, so the index never shows a status the hash does not.
+        now = timezone.now()
+        pipeline = client.pipeline()
+        pipeline.hset(
             result_key,
             mapping={
                 "status": TaskResultStatus.READY,
@@ -927,15 +1108,297 @@ class RedisTaskBackend(BaseTaskBackend):
                 "errors_json": serialize_json([]),
             },
         )
+        self._index_status(
+            pipeline,
+            task_id,
+            task_data.get("queue_name", "default"),
+            TaskResultStatus.READY,
+            now,
+            now,
+        )
+        pipeline.execute()
 
         # Re-add to stream for processing
         self.broker.requeue(task_data)
 
         return True
 
+    # -- status index ------------------------------------------------------
+    #
+    # One sorted set per status, backend-wide and per queue, holding the ids
+    # of the tasks in that status scored by the time they entered it. A count
+    # is a ZCARD instead of a pass over every stored result, and the READY
+    # set's ends are the oldest and newest waiting task. Every status write
+    # moves the task in the same script or transaction, so the index follows
+    # the hash under concurrent writers; an entry whose hash has expired is
+    # pruned by score, since nothing else takes it out.
+
+    def _status_index_keys(self, queue_name=None):
+        """
+        The index sets, backend-wide then queue-scoped, in STATUS_INDEX_ORDER.
+
+        Without a queue name only the backend-wide sets are returned.
+        """
+        keys = [
+            get_status_index_key(self.key_prefix, self.alias, status)
+            for status in STATUS_INDEX_ORDER
+        ]
+        if queue_name is not None:
+            keys.extend(
+                get_status_index_key(self.key_prefix, self.alias, status, queue_name)
+                for status in STATUS_INDEX_ORDER
+            )
+        return keys
+
+    def _status_index_ttl(self, status):
+        """The TTL a result hash carries while it is in `status`."""
+        if status in (TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED):
+            return self.completed_task_ttl
+        return self.result_ttl
+
+    def _status_index_cutoff(self, status, now):
+        """
+        The score below which an entry of `status` has expired with its hash.
+
+        A hash gets its TTL when it enters READY (counted from the time it
+        starts waiting) and again when it finishes, so an entry older than
+        the TTL of its status has no hash behind it. RUNNING keeps the READY
+        TTL, so a task that expired while running lingers for as long as it
+        had waited; a task interrupted and queued again lingers likewise.
+        None when results of `status` never expire.
+        """
+        ttl = self._status_index_ttl(status)
+        if not ttl or ttl <= 0:
+            return None
+        return now.timestamp() - ttl
+
+    def _script_index_args(self, task_id, status, now):
+        """The index arguments the transition scripts take after their own."""
+        cutoff = self._status_index_cutoff(status, now)
+        return [task_id, repr(now.timestamp()), "" if cutoff is None else repr(cutoff)]
+
+    def _index_status(self, pipeline, task_id, queue_name, status, since, now):
+        """
+        Queue the writes that move `task_id` to `status` in the index.
+
+        The Python side of the ``index_status`` script function, for the
+        writers that are a transaction rather than a script: the task leaves
+        the sets of every other status and joins the two of `status`, scored
+        by `since`, and those two are pruned of expired entries on the way.
+
+        Args:
+            pipeline: Pipeline the commands are queued on.
+            task_id: Task ID string.
+            queue_name: The task's queue.
+            status: Status the task is moving to.
+            since: Datetime the task entered the status, the entry's score.
+            now: Current datetime, for the expiry cutoff.
+        """
+        keys = self._status_index_keys(queue_name)
+        cutoff = self._status_index_cutoff(status, now)
+        for position, other in enumerate(STATUS_INDEX_ORDER):
+            for key in (keys[position], keys[4 + position]):
+                if other == status:
+                    if cutoff is not None:
+                        pipeline.zremrangebyscore(key, "-inf", cutoff)
+                    pipeline.zadd(key, {task_id: since.timestamp()})
+                else:
+                    pipeline.zrem(key, task_id)
+
+    def _waiting_since(self, task_data):
+        """
+        When a READY task started waiting: ``max(enqueued_at, run_after)``.
+
+        A delayed task starts waiting when it comes due, so run_after, when
+        set, is the origin instead of enqueued_at. The max compares
+        datetimes, not the ISO strings: enqueued_at is written from
+        timezone.now(), while run_after keeps the caller's offset, and
+        strings with different offsets do not compare as times.
+        """
+        enqueued_at = deserialize_datetime(task_data.get("enqueued_at", ""))
+        run_after = deserialize_datetime(task_data.get("run_after", ""))
+        if run_after is not None and (enqueued_at is None or run_after > enqueued_at):
+            return run_after
+        return enqueued_at
+
+    def _status_since(self, task_data, status, now):
+        """
+        When a stored task entered its status, from the hash, for a rebuild.
+
+        The same clock the transitions write: the time a READY task started
+        waiting, the last attempt for RUNNING, finished_at for the rest.
+        `now` stands in for a field the hash does not carry.
+        """
+        if status == TaskResultStatus.READY:
+            since = self._waiting_since(task_data)
+        elif status == TaskResultStatus.RUNNING:
+            since = deserialize_datetime(
+                task_data.get("last_attempted_at", "")
+            ) or deserialize_datetime(task_data.get("started_at", ""))
+        else:
+            since = deserialize_datetime(task_data.get("finished_at", ""))
+        return since or now
+
+    def has_status_index(self):
+        """
+        Whether the status index covers every stored result.
+
+        True once :meth:`rebuild_status_index` has run, or for a backend that
+        had no stored result the first time it was asked: the index is
+        written from the first task on, so there is nothing to rebuild. Until
+        then the status counts are read from the result hashes, as they were
+        before the index existed.
+
+        A positive answer is remembered for the process; a negative one is
+        asked again on every call, so a rebuild run from another process is
+        picked up without a restart.
+        """
+        if self._status_index_built:
+            return True
+
+        client = self.get_client()
+        built_key = get_status_index_built_key(self.key_prefix, self.alias)
+        if client.exists(built_key):
+            self._status_index_built = True
+        elif not client.exists(get_results_index_key(self.key_prefix, self.alias)):
+            client.set(built_key, "1")
+            self._status_index_built = True
+        return self._status_index_built
+
+    def rebuild_status_index(self, batch_size=None):
+        """
+        Index every stored result under its status, and mark the index built.
+
+        For the results a deployment stored before the index existed, and for
+        anything that has since put the index out of step with the hashes.
+        Workers can keep running throughout: each result is indexed by a
+        script that reads its status again first, and one that moved on in
+        between is left to the transition that moved it, which indexed it
+        itself.
+
+        Args:
+            batch_size: Results per pipelined round trip. If None, uses the
+                backend setting.
+
+        Returns:
+            Number of results indexed.
+        """
+        client = self.get_client()
+        batch_size = batch_size or self.scan_batch_size
+        index_task = client.register_script(_INDEX_TASK)
+        now = timezone.now()
+        indexed = 0
+
+        pipeline = client.pipeline(transaction=False)
+        queued = 0
+        for task_id, task_data in self.iter_task_data(batch_size=batch_size):
+            status = task_data.get("status")
+            if status not in STATUS_INDEX_ORDER:
+                continue
+            queue_name = task_data.get("queue_name", "default")
+            cutoff = self._status_index_cutoff(status, now)
+            index_task(
+                keys=[
+                    get_result_key(self.key_prefix, self.alias, task_id),
+                    *self._status_index_keys(queue_name),
+                ],
+                args=[
+                    task_id,
+                    status,
+                    repr(self._status_since(task_data, status, now).timestamp()),
+                    "" if cutoff is None else repr(cutoff),
+                ],
+                client=pipeline,
+            )
+            queued += 1
+            if queued >= batch_size:
+                indexed += pipeline.execute().count(1)
+                queued = 0
+        if queued:
+            indexed += pipeline.execute().count(1)
+
+        client.set(get_status_index_built_key(self.key_prefix, self.alias), "1")
+        self._status_index_built = True
+        logger.info(
+            "Status index of the %r task backend rebuilt: %s result(s) indexed",
+            self.alias,
+            indexed,
+        )
+        return indexed
+
+    def _read_status_index(self, queue_name=None):
+        """
+        The counts per status and the READY waiting-time bounds, from the index.
+
+        Entries older than the TTL of their status are pruned first: their
+        hash has expired, and nothing else takes them out of the set.
+
+        Returns:
+            Tuple of (counts dict, oldest waiting-since datetime, newest
+            waiting-since datetime), like :meth:`_scan_status_counts`.
+        """
+        client = self.get_client()
+        now = timezone.now()
+        # An empty queue name means every queue, as it does for the scan.
+        queue_name = queue_name or None
+        pipeline = client.pipeline(transaction=False)
+
+        count_positions = {}
+        queued = 0
+        for status in STATUS_INDEX_ORDER:
+            key = get_status_index_key(self.key_prefix, self.alias, status, queue_name)
+            cutoff = self._status_index_cutoff(status, now)
+            if cutoff is not None:
+                pipeline.zremrangebyscore(key, "-inf", cutoff)
+                queued += 1
+            pipeline.zcard(key)
+            count_positions[status] = queued
+            queued += 1
+
+        ready_key = get_status_index_key(
+            self.key_prefix, self.alias, TaskResultStatus.READY, queue_name
+        )
+        pipeline.zrange(ready_key, 0, 0, withscores=True)
+        pipeline.zrange(ready_key, -1, -1, withscores=True)
+
+        replies = pipeline.execute()
+        counts = {
+            status: replies[position] for status, position in count_positions.items()
+        }
+        oldest = replies[-2]
+        newest = replies[-1]
+        return (
+            counts,
+            deserialize_timestamp(oldest[0][1]) if oldest else None,
+            deserialize_timestamp(newest[0][1]) if newest else None,
+        )
+
+    def _status_counts(self, queue_name=None):
+        """
+        The counts and READY bounds from the index, or from a scan until it
+        is built.
+        """
+        if self.has_status_index():
+            return self._read_status_index(queue_name)
+
+        if not self._status_index_warned:
+            self._status_index_warned = True
+            logger.warning(
+                "The status index of the %r task backend has not been built, so "
+                "its status counts are read from every stored result. Run "
+                "`manage.py rebuild_redis_status_index --backend %s` once.",
+                self.alias,
+                self.alias,
+            )
+        return self._scan_status_counts(queue_name)
+
     def get_status_counts(self, queue_name=None):
         """
         Get task counts by status.
+
+        Read from the status index, at a cost independent of how many results
+        are stored; from a pass over the stored results until the index has
+        been built (see :meth:`has_status_index`).
 
         Args:
             queue_name: Optional queue name filter.
@@ -943,7 +1406,7 @@ class RedisTaskBackend(BaseTaskBackend):
         Returns:
             Dict mapping status to count.
         """
-        counts, _oldest, _newest = self._scan_status_counts(queue_name)
+        counts, _oldest, _newest = self._status_counts(queue_name)
         return counts
 
     def _scan_status_counts(self, queue_name=None):
@@ -980,19 +1443,7 @@ class RedisTaskBackend(BaseTaskBackend):
                 counts[status] += 1
 
             if status == TaskResultStatus.READY:
-                # A delayed task starts waiting when it comes due, so
-                # run_after, when set, is the origin instead of enqueued_at.
-                # The max compares datetimes, not the ISO strings: enqueued_at
-                # is written from timezone.now(), while run_after keeps the
-                # caller's offset, and strings with different offsets do not
-                # compare as times.
-                enqueued_at = deserialize_datetime(task_data.get("enqueued_at", ""))
-                run_after = deserialize_datetime(task_data.get("run_after", ""))
-                waiting_since = enqueued_at
-                if run_after is not None and (
-                    waiting_since is None or run_after > waiting_since
-                ):
-                    waiting_since = run_after
+                waiting_since = self._waiting_since(task_data)
                 if waiting_since is not None:
                     if oldest is None or waiting_since < oldest:
                         oldest = waiting_since
@@ -1019,7 +1470,7 @@ class RedisTaskBackend(BaseTaskBackend):
             is part of the pending count; its waiting time starts at its
             ``run_after``, which can lie in the future.
         """
-        counts, oldest, newest = self._scan_status_counts(queue_name)
+        counts, oldest, newest = self._status_counts(queue_name)
 
         delayed_count = 0
         client = self.get_client()

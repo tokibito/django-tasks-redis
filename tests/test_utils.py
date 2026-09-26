@@ -11,11 +11,14 @@ from django.utils import timezone
 from django_tasks_redis.utils import (
     deserialize_datetime,
     deserialize_json,
+    deserialize_timestamp,
     get_delayed_key,
     get_priority_stream_key,
     get_redis_client,
     get_result_key,
     get_results_index_key,
+    get_status_index_built_key,
+    get_status_index_key,
     get_stream_key,
     priority_to_level,
     serialize_datetime,
@@ -76,6 +79,31 @@ class TestDeserializeDatetime:
         written = timezone.now()
 
         assert deserialize_datetime(serialize_datetime(written)) == written
+
+
+class TestDeserializeTimestamp:
+    """Tests for turning a sorted set score back into a datetime."""
+
+    def test_aware_under_use_tz(self):
+        """The result is aware and compares with timezone.now()."""
+        result = deserialize_timestamp(1705314600.0)
+
+        assert result == datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC)
+        assert result < timezone.now()
+
+    @override_settings(USE_TZ=False)
+    def test_naive_without_use_tz(self):
+        """Without USE_TZ the result is naive, like timezone.now() then."""
+        result = deserialize_timestamp(1705314600.0)
+
+        assert timezone.is_naive(result)
+        assert result < timezone.now()
+
+    def test_round_trip_keeps_the_microseconds(self):
+        """A score written from a datetime reads back as that datetime."""
+        written = timezone.now()
+
+        assert deserialize_timestamp(written.timestamp()) == written
 
 
 class TestSerializeJson:
@@ -150,6 +178,22 @@ class TestKeyGenerators:
         """Test results index key generation."""
         result = get_results_index_key("prefix", "backend")
         assert result == "prefix:backend:results_index"
+
+    def test_get_status_index_key(self):
+        """Test status index key generation, backend-wide and per queue."""
+        assert (
+            get_status_index_key("prefix", "backend", "READY")
+            == "prefix:backend:status_index:READY"
+        )
+        assert (
+            get_status_index_key("prefix", "backend", "READY", "queue")
+            == "prefix:backend:queue:status_index:READY"
+        )
+
+    def test_get_status_index_built_key(self):
+        """Test status index marker key generation."""
+        result = get_status_index_built_key("prefix", "backend")
+        assert result == "prefix:backend:status_index_built"
 
 
 class TestGetRedisClient:

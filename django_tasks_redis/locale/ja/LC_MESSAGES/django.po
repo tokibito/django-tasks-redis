@@ -127,3 +127,7 @@ msgstr "1回の往復で読み取るタスク数 (デフォルト: REDIS_SCAN_BA
 #: management/commands/purge_completed_redis_tasks.py
 msgid "Only show count, don't actually delete"
 msgstr "カウントのみ表示、実際には削除しない"
+
+#: management/commands/rebuild_redis_status_index.py
+msgid "Rebuild the status index the task counts are read from"
+msgstr "タスク数の読み取り元となるステータス索引を再構築"

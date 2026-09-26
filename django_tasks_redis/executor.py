@@ -380,6 +380,29 @@ def purge_completed_tasks(
     return deleted_count
 
 
+def rebuild_status_index(backend_name="default", batch_size=None):
+    """
+    Index every stored result under its status, and mark the index built.
+
+    The status index is what ``get_task_counts()`` and ``get_queue_stats()``
+    read, at a cost independent of how many results are stored. A deployment
+    that stored results before the index existed reads them from the result
+    hashes, as before, until this has run once; see
+    :meth:`~django_tasks_redis.backends.RedisTaskBackend.has_status_index`.
+    Workers can keep running while it does.
+
+    Args:
+        backend_name: Backend name (default: "default").
+        batch_size: Results per pipelined round trip. If None, uses the
+            backend setting.
+
+    Returns:
+        Number of results indexed.
+    """
+    backend = task_backends[backend_name]
+    return backend.rebuild_status_index(batch_size=batch_size)
+
+
 # Admin API functions
 
 
