@@ -4,13 +4,18 @@ Management command to purge completed Redis tasks.
 
 from django.core.management.base import BaseCommand, CommandError
 from django.tasks.base import TaskResultStatus
+from django.utils.translation import gettext
 from django.utils.translation import gettext_lazy as _
 
 from django_tasks_redis import executor
 
 
 class Command(BaseCommand):
-    help = _("Delete completed Redis tasks older than specified days")
+    @property
+    def help(self) -> str:
+        # argparse formats the parser description with a regex, which a
+        # lazy string cannot go through, so translate it here (#54).
+        return gettext("Delete completed Redis tasks older than specified days")
 
     def add_arguments(self, parser):
         parser.add_argument(

@@ -55,6 +55,16 @@ deployment needs nothing.
 
 ### Fixed
 
+- **`--help` on the management commands raised `TypeError`.**
+  `run_redis_tasks --help`, `purge_completed_redis_tasks --help` and
+  `rebuild_redis_status_index --help` ended in `TypeError: expected string or
+  bytes-like object, got '__proxy__'` instead of printing the usage text: the
+  command description was a lazy translation, which argparse cannot format as
+  the parser description. The description is now translated when the parser
+  is built, so it is still shown in Japanese under a Japanese locale. The
+  commands themselves were not affected.
+  ([#54](https://github.com/tokibito/django-tasks-redis/issues/54))
+
 - **`test_wait_blocks_until_timeout` could fail on Windows.** Windows can
   measure a `threading.Event.wait()` slightly short of its timeout, so the
   test's `elapsed >= 0.1` failed intermittently there, CI included. The

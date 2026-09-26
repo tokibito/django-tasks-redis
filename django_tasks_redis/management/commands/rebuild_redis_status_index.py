@@ -9,13 +9,18 @@ reads its counts from the stored results until then.
 """
 
 from django.core.management.base import BaseCommand
+from django.utils.translation import gettext
 from django.utils.translation import gettext_lazy as _
 
 from django_tasks_redis import executor
 
 
 class Command(BaseCommand):
-    help = _("Rebuild the status index the task counts are read from")
+    @property
+    def help(self) -> str:
+        # argparse formats the parser description with a regex, which a
+        # lazy string cannot go through, so translate it here (#54).
+        return gettext("Rebuild the status index the task counts are read from")
 
     def add_arguments(self, parser):
         parser.add_argument(

@@ -502,3 +502,29 @@ class TestRebuildRedisStatusIndexCommand:
             call_command("rebuild_redis_status_index", batch_size=7, stdout=StringIO())
 
         rebuild.assert_called_once_with(batch_size=7)
+
+
+class TestCommandHelp:
+    """Tests for the --help output of the management commands."""
+
+    COMMANDS = {
+        "run_redis_tasks": "Run a worker to process Redis tasks",
+        "purge_completed_redis_tasks": (
+            "Delete completed Redis tasks older than specified days"
+        ),
+        "rebuild_redis_status_index": (
+            "Rebuild the status index the task counts are read from"
+        ),
+    }
+
+    @pytest.mark.parametrize("name", COMMANDS)
+    def test_help_shows_the_description(self, name):
+        """--help prints the usage text instead of raising (#54)."""
+        from django.core.management import load_command_class
+
+        command = load_command_class("django_tasks_redis", name)
+        help_text = command.create_parser("manage.py", name).format_help()
+
+        assert isinstance(command.help, str)
+        assert self.COMMANDS[name] in help_text
+        assert "--backend" in help_text

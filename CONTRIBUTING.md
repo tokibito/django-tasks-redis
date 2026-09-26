@@ -118,7 +118,8 @@ A few things are easy to forget:
 
 - **Translations.** User-visible strings in `models.py`, `admin.py`,
   `apps.py` and the management commands go through `gettext_lazy`, and there
-  is a Japanese catalogue. Adding a string means updating it, from inside the
+  is a Japanese catalogue. The one exception is a command's `help`, which
+  argparse cannot take lazily: it is a property returning `gettext(...)`. Adding a string means updating it, from inside the
   app directory:
 
   ```bash
