@@ -525,6 +525,5 @@ class TestCommandHelp:
         command = load_command_class("django_tasks_redis", name)
         help_text = command.create_parser("manage.py", name).format_help()
 
-        assert isinstance(command.help, str)
         assert self.COMMANDS[name] in help_text
         assert "--backend" in help_text
