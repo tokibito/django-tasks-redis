@@ -5,7 +5,7 @@ django-tasks-redis: A Redis/Valkey-backed task queue backend for Django 6.0's ta
 from .backends import RedisTaskBackend
 from .shutdown import GracefulShutdown, get_active_shutdown, is_shutdown_requested
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "GracefulShutdown",
     "RedisTaskBackend",

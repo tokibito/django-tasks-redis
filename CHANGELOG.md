@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 **A deployment upgrading with stored results runs
 `python manage.py rebuild_redis_status_index` once**, after every process is
@@ -48,7 +48,8 @@ deployment needs nothing.
   it becomes due, not at `enqueued_at`, so a task that is not due yet does
   not read as queue age. The backend gained the matching `get_queue_stats()`
   and `executor.get_queue_stats()` returns its result; the counts and the
-  waiting times come out of one scan of the results index. The README's new
+  waiting times come out of the same read of the status index above (or of
+  one scan of the results, until the index is built). The README's new
   *Monitoring* section points at the queue stats for queue state and at the
   `task_finished` signal for task duration.
   ([#46](https://github.com/tokibito/django-tasks-redis/issues/46))
