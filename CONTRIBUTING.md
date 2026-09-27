@@ -117,23 +117,24 @@ fails the lint job rather than the release.
 A few things are easy to forget:
 
 - **Translations.** User-visible strings in `models.py`, `admin.py` and
-  `apps.py` go through `gettext_lazy`, and there is a Japanese catalogue. The
-  management commands use `gettext` instead, because argparse cannot format a
-  lazy string; a command's `help` is a property so that it is translated when
-  the parser is built. Adding a string means updating the catalogue, from
+  `apps.py` go through `gettext_lazy`, and there are Japanese, Simplified
+  Chinese, Brazilian Portuguese and Spanish catalogues. The management
+  commands use `gettext` instead, because argparse cannot format a lazy
+  string; a command's `help` is a property so that it is translated when the
+  parser is built. Adding a string means updating every catalogue, from
   inside the app directory:
 
   ```bash
   cd django_tasks_redis
-  PYTHONPATH=.. ../venv/bin/python -m django makemessages -l ja --settings tests.settings
-  # fill in the new msgstr, then check it compiles
+  PYTHONPATH=.. ../venv/bin/python -m django makemessages -a --settings tests.settings
+  # fill in the new msgstr in each catalogue, then check they compile
   PYTHONPATH=.. ../venv/bin/python -m django compilemessages --settings tests.settings
   ```
 
-  Commit `django.po` only. The `.mo` file is not in the repository; the
-  publish workflow compiles it when the package is built, and the tests do not
-  need it. `makemessages` may also rewrite the `#:` source references; that is
-  only bookkeeping.
+  Commit the `django.po` files only. The `.mo` files are not in the
+  repository; the publish workflow compiles them when the package is built,
+  and the tests do not need them. `makemessages` may also rewrite the `#:`
+  source references; that is only bookkeeping.
 
 - **The changelog.** Add a line to the *Unreleased* section of
   `CHANGELOG.md`, under *Added*, *Changed*, *Deprecated*, *Removed*, *Fixed*

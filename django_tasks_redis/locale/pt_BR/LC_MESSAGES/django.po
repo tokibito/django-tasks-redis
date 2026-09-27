@@ -1,0 +1,295 @@
+# Brazilian Portuguese translations for django-tasks-redis
+# Copyright (C) 2025 Shinya Okano
+# This file is distributed under the same license as the django-tasks-redis package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: django-tasks-redis 0.1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-27 13:04+0000\n"
+"PO-Revision-Date: 2026-09-27 00:00+0000\n"
+"Last-Translator: Shinya Okano <tokibito@gmail.com>\n"
+"Language-Team: Brazilian Portuguese\n"
+"Language: pt_BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#: admin.py:45 admin.py:328
+#: templates/admin/django_tasks_redis/redistask/detail.html:117
+msgid "Status"
+msgstr "Status"
+
+#: admin.py:60 admin.py:340
+msgid "Queue"
+msgstr "Fila"
+
+#: admin.py:73 templates/admin/django_tasks_redis/redistask/detail.html:113
+msgid "Task Path"
+msgstr "Caminho da tarefa"
+
+#: admin.py:86 admin.py:334
+#: templates/admin/django_tasks_redis/redistask/detail.html:121
+msgid "Priority"
+msgstr "Prioridade"
+
+#: admin.py:280 templates/admin/django_tasks_redis/redistask/detail.html:4
+#: templates/admin/django_tasks_redis/redistask/detail.html:11
+msgid "Task Detail"
+msgstr "Detalhes da tarefa"
+
+#: admin.py:300
+msgid "ID"
+msgstr "ID"
+
+#: admin.py:309
+msgid "Task"
+msgstr "Tarefa"
+
+#: admin.py:346 templates/admin/django_tasks_redis/redistask/detail.html:139
+msgid "Enqueued At"
+msgstr "Enfileirada em"
+
+#: admin.py:348
+msgid "Run selected tasks"
+msgstr "Executar tarefas selecionadas"
+
+#: admin.py:357 admin.py:410 admin.py:466
+msgid "No tasks selected."
+msgstr "Nenhuma tarefa selecionada."
+
+#: admin.py:387 admin.py:443
+#, python-format
+msgid "%(count)d succeeded"
+msgstr "%(count)d com sucesso"
+
+#: admin.py:389
+#, python-format
+msgid "%(count)d failed"
+msgstr "%(count)d falharam"
+
+#: admin.py:392
+#, python-format
+msgid "%(count)d skipped (not READY)"
+msgstr "%(count)d ignoradas (não estão em READY)"
+
+#: admin.py:397
+#, python-format
+msgid "Task execution completed: %(results)s."
+msgstr "Execução das tarefas concluída: %(results)s."
+
+#: admin.py:402
+msgid "Retry failed tasks"
+msgstr "Tentar novamente tarefas com falha"
+
+#: admin.py:445
+#, python-format
+msgid "%(count)d failed again"
+msgstr "%(count)d falharam novamente"
+
+#: admin.py:448
+#, python-format
+msgid "%(count)d skipped (not FAILED)"
+msgstr "%(count)d ignoradas (não estão em FAILED)"
+
+#: admin.py:453
+#, python-format
+msgid "Retry completed: %(results)s."
+msgstr "Nova tentativa concluída: %(results)s."
+
+#: admin.py:458
+msgid "Delete selected tasks"
+msgstr "Excluir tarefas selecionadas"
+
+#: admin.py:475
+#, python-format
+msgid "%(count)d task(s) deleted."
+msgstr "%(count)d tarefa(s) excluída(s)."
+
+#: apps.py:8 models.py:31
+msgid "Redis Tasks"
+msgstr "Tarefas do Redis"
+
+#: management/commands/purge_completed_redis_tasks.py:18
+msgid "Delete completed Redis tasks older than specified days"
+msgstr "Exclui as tarefas do Redis concluídas há mais do que o número de dias especificado"
+
+#: management/commands/purge_completed_redis_tasks.py:25
+msgid "Delete tasks completed more than N days ago (default: 7)"
+msgstr "Exclui as tarefas concluídas há mais de N dias (padrão: 7)"
+
+#: management/commands/purge_completed_redis_tasks.py:33
+msgid ""
+"Status to delete (can be specified multiple times, default: SUCCESSFUL,"
+"FAILED)"
+msgstr "Status a excluir (pode ser informado várias vezes, padrão: SUCCESSFUL,FAILED)"
+
+#: management/commands/purge_completed_redis_tasks.py:39
+msgid "Only delete tasks with this task path (default: all tasks)"
+msgstr "Exclui apenas as tarefas com este caminho de tarefa (padrão: todas as tarefas)"
+
+#: management/commands/purge_completed_redis_tasks.py:45
+#: management/commands/rebuild_redis_status_index.py:30
+msgid "Tasks read per round trip (default: REDIS_SCAN_BATCH_SIZE)"
+msgstr "Tarefas lidas por ida e volta ao servidor (padrão: REDIS_SCAN_BATCH_SIZE)"
+
+#: management/commands/purge_completed_redis_tasks.py:51
+msgid "Only show count, don't actually delete"
+msgstr "Apenas mostra a contagem, sem excluir de fato"
+
+#: management/commands/purge_completed_redis_tasks.py:57
+#: management/commands/rebuild_redis_status_index.py:36
+#: management/commands/run_redis_tasks.py:73
+msgid "Backend name (default: default)"
+msgstr "Nome do backend (padrão: default)"
+
+#: management/commands/rebuild_redis_status_index.py:23
+msgid "Rebuild the status index the task counts are read from"
+msgstr "Reconstrói o índice de status do qual as contagens de tarefas são lidas"
+
+#: management/commands/run_redis_tasks.py:60
+msgid "Run a worker to process Redis tasks"
+msgstr "Executa um worker para processar tarefas do Redis"
+
+#: management/commands/run_redis_tasks.py:67
+msgid "Process only tasks from specific queue"
+msgstr "Processa apenas as tarefas da fila especificada"
+
+#: management/commands/run_redis_tasks.py:79
+msgid "Run continuously (don't exit when queue is empty)"
+msgstr "Executa continuamente (não sai quando a fila está vazia)"
+
+#: management/commands/run_redis_tasks.py:85
+msgid "Polling interval in seconds (default: 1.0)"
+msgstr "Intervalo de consulta em segundos (padrão: 1.0)"
+
+#: management/commands/run_redis_tasks.py:91
+msgid "Maximum number of tasks to process (0 = unlimited)"
+msgstr "Número máximo de tarefas a processar (0 = ilimitado)"
+
+#: management/commands/run_redis_tasks.py:97
+msgid "Stale task claim interval in seconds (default: 60.0)"
+msgstr "Intervalo em segundos para reivindicar tarefas paradas (padrão: 60.0)"
+
+#: management/commands/run_redis_tasks.py:104
+msgid ""
+"Maximum seconds to wait for the running task after receiving SIGTERM/SIGINT "
+"before forcing exit (0=wait indefinitely, default: 0)"
+msgstr "Tempo máximo, em segundos, de espera pela tarefa em execução após receber SIGTERM/SIGINT antes de forçar a saída (0=esperar indefinidamente, padrão: 0)"
+
+#: management/commands/run_redis_tasks.py:112
+msgid ""
+"Do not install SIGTERM/SIGINT handlers; the process is terminated "
+"immediately, even while a task is running"
+msgstr "Não instala manipuladores de SIGTERM/SIGINT; o processo é encerrado imediatamente, mesmo com uma tarefa em execução"
+
+#: management/commands/run_redis_tasks.py:122
+msgid ""
+"Exit with this code when no task was processed, so a job scheduler can tell "
+"an idle run from a real one (0=exit normally, default: 0)"
+msgstr "Sai com este código quando nenhuma tarefa foi processada, para que um agendador de jobs distinga uma execução ociosa de uma real (0=sair normalmente, padrão: 0)"
+
+#: management/commands/run_redis_tasks.py:133
+msgid ""
+"Exit with this code when at least one task failed or could not be run. Takes "
+"precedence over --empty-exit-code (0=exit normally, default: 0)"
+msgstr "Sai com este código quando ao menos uma tarefa falhou ou não pôde ser executada. Tem precedência sobre --empty-exit-code (0=sair normalmente, padrão: 0)"
+
+#: models.py:29
+msgid "Can run Redis task"
+msgstr "Pode executar tarefa do Redis"
+
+#: models.py:30
+msgid "Redis Task"
+msgstr "Tarefa do Redis"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:8
+msgid "Home"
+msgstr "Início"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:106
+msgid "Task Information"
+msgstr "Informações da tarefa"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:109
+msgid "Task ID"
+msgstr "ID da tarefa"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:125
+msgid "Queue Name"
+msgstr "Nome da fila"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:129
+msgid "Backend"
+msgstr "Backend"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:136
+msgid "Timestamps"
+msgstr "Carimbos de data/hora"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:143
+msgid "Run After"
+msgstr "Agendada para"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:147
+msgid "Started At"
+msgstr "Iniciada em"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:151
+msgid "Finished At"
+msgstr "Finalizada em"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:158
+msgid "Arguments"
+msgstr "Argumentos"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:161
+msgid "Args"
+msgstr "Argumentos posicionais"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:166
+#: templates/admin/django_tasks_redis/redistask/detail.html:176
+msgid "None"
+msgstr "Nenhum"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:171
+msgid "Kwargs"
+msgstr "Argumentos nomeados"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:185
+msgid "Return Value"
+msgstr "Valor de retorno"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:188
+msgid "Result"
+msgstr "Resultado"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:199
+msgid "Error Information"
+msgstr "Informações de erro"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:202
+msgid "Errors"
+msgstr "Erros"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:213
+msgid "Worker Information"
+msgstr "Informações do worker"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:216
+msgid "Worker IDs"
+msgstr "IDs dos workers"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:225
+msgid "Task Not Found"
+msgstr "Tarefa não encontrada"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:226
+#, python-format
+msgid "The task with ID <code>%(task_id)s</code> was not found."
+msgstr "A tarefa com o ID <code>%(task_id)s</code> não foi encontrada."
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:231
+msgid "Back to Task List"
+msgstr "Voltar para a lista de tarefas"

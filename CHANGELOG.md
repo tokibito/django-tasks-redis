@@ -10,6 +10,11 @@ deployment needs nothing.
 
 ### Added
 
+- **Simplified Chinese, Brazilian Portuguese and Spanish translations.** The
+  admin, the task detail page and the help of the management commands are
+  now translated under a `zh-hans`, `pt-br` or `es` locale, as they already
+  were under a Japanese one.
+
 - **A status index behind the task counts.** `get_status_counts()`,
   `get_task_counts()`, `get_pending_task_count()` and `get_queue_stats()`
   read one sorted set per status — for the backend and for each queue,

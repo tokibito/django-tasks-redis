@@ -1,0 +1,295 @@
+# Simplified Chinese translations for django-tasks-redis
+# Copyright (C) 2025 Shinya Okano
+# This file is distributed under the same license as the django-tasks-redis package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: django-tasks-redis 0.1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-27 13:04+0000\n"
+"PO-Revision-Date: 2026-09-27 00:00+0000\n"
+"Last-Translator: Shinya Okano <tokibito@gmail.com>\n"
+"Language-Team: Simplified Chinese\n"
+"Language: zh_Hans\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#: admin.py:45 admin.py:328
+#: templates/admin/django_tasks_redis/redistask/detail.html:117
+msgid "Status"
+msgstr "状态"
+
+#: admin.py:60 admin.py:340
+msgid "Queue"
+msgstr "队列"
+
+#: admin.py:73 templates/admin/django_tasks_redis/redistask/detail.html:113
+msgid "Task Path"
+msgstr "任务路径"
+
+#: admin.py:86 admin.py:334
+#: templates/admin/django_tasks_redis/redistask/detail.html:121
+msgid "Priority"
+msgstr "优先级"
+
+#: admin.py:280 templates/admin/django_tasks_redis/redistask/detail.html:4
+#: templates/admin/django_tasks_redis/redistask/detail.html:11
+msgid "Task Detail"
+msgstr "任务详情"
+
+#: admin.py:300
+msgid "ID"
+msgstr "ID"
+
+#: admin.py:309
+msgid "Task"
+msgstr "任务"
+
+#: admin.py:346 templates/admin/django_tasks_redis/redistask/detail.html:139
+msgid "Enqueued At"
+msgstr "入队时间"
+
+#: admin.py:348
+msgid "Run selected tasks"
+msgstr "运行所选任务"
+
+#: admin.py:357 admin.py:410 admin.py:466
+msgid "No tasks selected."
+msgstr "未选择任何任务。"
+
+#: admin.py:387 admin.py:443
+#, python-format
+msgid "%(count)d succeeded"
+msgstr "%(count)d 个成功"
+
+#: admin.py:389
+#, python-format
+msgid "%(count)d failed"
+msgstr "%(count)d 个失败"
+
+#: admin.py:392
+#, python-format
+msgid "%(count)d skipped (not READY)"
+msgstr "跳过 %(count)d 个（不是 READY 状态）"
+
+#: admin.py:397
+#, python-format
+msgid "Task execution completed: %(results)s."
+msgstr "任务执行完成：%(results)s。"
+
+#: admin.py:402
+msgid "Retry failed tasks"
+msgstr "重试失败的任务"
+
+#: admin.py:445
+#, python-format
+msgid "%(count)d failed again"
+msgstr "%(count)d 个再次失败"
+
+#: admin.py:448
+#, python-format
+msgid "%(count)d skipped (not FAILED)"
+msgstr "跳过 %(count)d 个（不是 FAILED 状态）"
+
+#: admin.py:453
+#, python-format
+msgid "Retry completed: %(results)s."
+msgstr "重试完成：%(results)s。"
+
+#: admin.py:458
+msgid "Delete selected tasks"
+msgstr "删除所选任务"
+
+#: admin.py:475
+#, python-format
+msgid "%(count)d task(s) deleted."
+msgstr "已删除 %(count)d 个任务。"
+
+#: apps.py:8 models.py:31
+msgid "Redis Tasks"
+msgstr "Redis 任务"
+
+#: management/commands/purge_completed_redis_tasks.py:18
+msgid "Delete completed Redis tasks older than specified days"
+msgstr "删除早于指定天数的已完成 Redis 任务"
+
+#: management/commands/purge_completed_redis_tasks.py:25
+msgid "Delete tasks completed more than N days ago (default: 7)"
+msgstr "删除 N 天以前完成的任务（默认：7）"
+
+#: management/commands/purge_completed_redis_tasks.py:33
+msgid ""
+"Status to delete (can be specified multiple times, default: SUCCESSFUL,"
+"FAILED)"
+msgstr "要删除的状态（可多次指定，默认：SUCCESSFUL,FAILED）"
+
+#: management/commands/purge_completed_redis_tasks.py:39
+msgid "Only delete tasks with this task path (default: all tasks)"
+msgstr "仅删除具有此任务路径的任务（默认：所有任务）"
+
+#: management/commands/purge_completed_redis_tasks.py:45
+#: management/commands/rebuild_redis_status_index.py:30
+msgid "Tasks read per round trip (default: REDIS_SCAN_BATCH_SIZE)"
+msgstr "每次往返读取的任务数（默认：REDIS_SCAN_BATCH_SIZE）"
+
+#: management/commands/purge_completed_redis_tasks.py:51
+msgid "Only show count, don't actually delete"
+msgstr "仅显示数量，不实际删除"
+
+#: management/commands/purge_completed_redis_tasks.py:57
+#: management/commands/rebuild_redis_status_index.py:36
+#: management/commands/run_redis_tasks.py:73
+msgid "Backend name (default: default)"
+msgstr "后端名称（默认：default）"
+
+#: management/commands/rebuild_redis_status_index.py:23
+msgid "Rebuild the status index the task counts are read from"
+msgstr "重建用于读取任务数量的状态索引"
+
+#: management/commands/run_redis_tasks.py:60
+msgid "Run a worker to process Redis tasks"
+msgstr "运行处理 Redis 任务的工作进程"
+
+#: management/commands/run_redis_tasks.py:67
+msgid "Process only tasks from specific queue"
+msgstr "仅处理指定队列中的任务"
+
+#: management/commands/run_redis_tasks.py:79
+msgid "Run continuously (don't exit when queue is empty)"
+msgstr "持续运行（队列为空时不退出）"
+
+#: management/commands/run_redis_tasks.py:85
+msgid "Polling interval in seconds (default: 1.0)"
+msgstr "轮询间隔秒数（默认：1.0）"
+
+#: management/commands/run_redis_tasks.py:91
+msgid "Maximum number of tasks to process (0 = unlimited)"
+msgstr "要处理的最大任务数（0 = 不限）"
+
+#: management/commands/run_redis_tasks.py:97
+msgid "Stale task claim interval in seconds (default: 60.0)"
+msgstr "认领停滞任务的间隔秒数（默认：60.0）"
+
+#: management/commands/run_redis_tasks.py:104
+msgid ""
+"Maximum seconds to wait for the running task after receiving SIGTERM/SIGINT "
+"before forcing exit (0=wait indefinitely, default: 0)"
+msgstr "收到 SIGTERM/SIGINT 后、强制退出前等待正在运行的任务的最长秒数（0=无限期等待，默认：0）"
+
+#: management/commands/run_redis_tasks.py:112
+msgid ""
+"Do not install SIGTERM/SIGINT handlers; the process is terminated "
+"immediately, even while a task is running"
+msgstr "不安装 SIGTERM/SIGINT 处理程序；即使有任务正在运行，进程也会立即终止"
+
+#: management/commands/run_redis_tasks.py:122
+msgid ""
+"Exit with this code when no task was processed, so a job scheduler can tell "
+"an idle run from a real one (0=exit normally, default: 0)"
+msgstr "未处理任何任务时以此代码退出，以便作业调度器区分空转的运行与实际的运行（0=正常退出，默认：0）"
+
+#: management/commands/run_redis_tasks.py:133
+msgid ""
+"Exit with this code when at least one task failed or could not be run. Takes "
+"precedence over --empty-exit-code (0=exit normally, default: 0)"
+msgstr "至少有一个任务失败或无法运行时以此代码退出。优先于 --empty-exit-code（0=正常退出，默认：0）"
+
+#: models.py:29
+msgid "Can run Redis task"
+msgstr "可以运行 Redis 任务"
+
+#: models.py:30
+msgid "Redis Task"
+msgstr "Redis 任务"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:8
+msgid "Home"
+msgstr "首页"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:106
+msgid "Task Information"
+msgstr "任务信息"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:109
+msgid "Task ID"
+msgstr "任务 ID"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:125
+msgid "Queue Name"
+msgstr "队列名称"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:129
+msgid "Backend"
+msgstr "后端"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:136
+msgid "Timestamps"
+msgstr "时间戳"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:143
+msgid "Run After"
+msgstr "计划执行时间"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:147
+msgid "Started At"
+msgstr "开始时间"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:151
+msgid "Finished At"
+msgstr "结束时间"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:158
+msgid "Arguments"
+msgstr "参数"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:161
+msgid "Args"
+msgstr "位置参数"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:166
+#: templates/admin/django_tasks_redis/redistask/detail.html:176
+msgid "None"
+msgstr "无"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:171
+msgid "Kwargs"
+msgstr "关键字参数"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:185
+msgid "Return Value"
+msgstr "返回值"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:188
+msgid "Result"
+msgstr "结果"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:199
+msgid "Error Information"
+msgstr "错误信息"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:202
+msgid "Errors"
+msgstr "错误"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:213
+msgid "Worker Information"
+msgstr "工作进程信息"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:216
+msgid "Worker IDs"
+msgstr "工作进程 ID"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:225
+msgid "Task Not Found"
+msgstr "未找到任务"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:226
+#, python-format
+msgid "The task with ID <code>%(task_id)s</code> was not found."
+msgstr "未找到 ID 为 <code>%(task_id)s</code> 的任务。"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:231
+msgid "Back to Task List"
+msgstr "返回任务列表"
