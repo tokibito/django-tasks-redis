@@ -473,6 +473,11 @@ class TestRedisTaskAdminViews:
         )
         assert response.status_code == 200
         assert "Task Not Found" in response.content.decode()
+        # One translatable sentence, so the ID can move within it.
+        assert (
+            "The task with ID <code>non-existent-id</code> was not found."
+            in response.content.decode()
+        )
 
     def test_change_view_redirects_to_detail(self, admin_client, clean_redis):
         """Test that change view redirects to detail view."""

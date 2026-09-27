@@ -223,11 +223,11 @@
 {% else %}
 <div class="task-detail not-found">
     <h2>{% trans "Task Not Found" %}</h2>
-    <p>{% trans "The task with ID" %} <code>{{ task_id }}</code> {% trans "was not found." %}</p>
+    <p>{% blocktrans %}The task with ID <code>{{ task_id }}</code> was not found.{% endblocktrans %}</p>
 </div>
 {% endif %}
 
 <p style="margin-top: 20px;">
-    <a class="back-link" href="{% url 'admin:django_tasks_redis_redistask_changelist' %}">&larr; Back to Task List</a>
+    <a class="back-link" href="{% url 'admin:django_tasks_redis_redistask_changelist' %}">&larr; {% trans "Back to Task List" %}</a>
 </p>
 {% endblock %}

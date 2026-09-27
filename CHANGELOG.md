@@ -66,6 +66,17 @@ deployment needs nothing.
   commands themselves were not affected.
   ([#54](https://github.com/tokibito/django-tasks-redis/issues/54))
 
+- **Part of the admin and of the command help was shown in English under a
+  Japanese locale.** The Japanese catalogue had no entry for 34 strings
+  added since it was last updated: the admin's list filters, columns and
+  delete action, the task detail page, `purge_completed_redis_tasks
+  --task-path` and the shutdown and exit-code options of `run_redis_tasks`.
+  They are now translated. The "task was not found" message of the detail
+  page is now one sentence around the task ID instead of two pieces, so it
+  can be translated in the word order of the language, and its "Back to Task
+  List" link is now translated too.
+  ([#56](https://github.com/tokibito/django-tasks-redis/issues/56))
+
 - **`test_wait_blocks_until_timeout` could fail on Windows.** Windows can
   measure a `threading.Event.wait()` slightly short of its timeout, so the
   test's `elapsed >= 0.1` failed intermittently there, CI included. The

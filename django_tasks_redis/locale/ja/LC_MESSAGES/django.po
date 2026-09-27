@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: django-tasks-redis 0.1.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2025-01-01 00:00+0000\n"
+"POT-Creation-Date: 2026-09-27 12:51+0000\n"
 "PO-Revision-Date: 2025-01-01 00:00+0000\n"
 "Last-Translator: Shinya Okano <tokibito@gmail.com>\n"
 "Language-Team: Japanese\n"
@@ -16,118 +16,280 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: apps.py models.py
-msgid "Redis Tasks"
-msgstr "Redisタスク"
-
-#: models.py
-msgid "Redis Task"
-msgstr "Redisタスク"
-
-#: models.py
-msgid "Can run Redis task"
-msgstr "Redisタスクを実行できる"
-
-#: admin.py
-msgid "ID"
-msgstr "ID"
-
-#: admin.py
-msgid "Task"
-msgstr "タスク"
-
-#: admin.py
+#: admin.py:45 admin.py:328
+#: templates/admin/django_tasks_redis/redistask/detail.html:117
 msgid "Status"
 msgstr "ステータス"
 
-#: admin.py
+#: admin.py:60 admin.py:340
+msgid "Queue"
+msgstr "キュー"
+
+#: admin.py:73 templates/admin/django_tasks_redis/redistask/detail.html:113
+msgid "Task Path"
+msgstr "タスクパス"
+
+#: admin.py:86 admin.py:334
+#: templates/admin/django_tasks_redis/redistask/detail.html:121
+msgid "Priority"
+msgstr "優先度"
+
+#: admin.py:280 templates/admin/django_tasks_redis/redistask/detail.html:4
+#: templates/admin/django_tasks_redis/redistask/detail.html:11
+msgid "Task Detail"
+msgstr "タスク詳細"
+
+#: admin.py:300
+msgid "ID"
+msgstr "ID"
+
+#: admin.py:309
+msgid "Task"
+msgstr "タスク"
+
+#: admin.py:346 templates/admin/django_tasks_redis/redistask/detail.html:139
+msgid "Enqueued At"
+msgstr "エンキュー日時"
+
+#: admin.py:348
 msgid "Run selected tasks"
 msgstr "選択されたタスクを実行"
 
-#: admin.py
-msgid "Retry failed tasks"
-msgstr "失敗したタスクを再実行"
-
-#: admin.py
+#: admin.py:357 admin.py:410 admin.py:466
 msgid "No tasks selected."
 msgstr "タスクが選択されていません。"
 
-#: admin.py
+#: admin.py:387 admin.py:443
+#, python-format
 msgid "%(count)d succeeded"
 msgstr "%(count)d件成功"
 
-#: admin.py
+#: admin.py:389
+#, python-format
 msgid "%(count)d failed"
 msgstr "%(count)d件失敗"
 
-#: admin.py
+#: admin.py:392
+#, python-format
 msgid "%(count)d skipped (not READY)"
 msgstr "%(count)d件スキップ (READY状態ではない)"
 
-#: admin.py
-msgid "%(count)d failed again"
-msgstr "%(count)d件再度失敗"
-
-#: admin.py
-msgid "%(count)d skipped (not FAILED)"
-msgstr "%(count)d件スキップ (FAILED状態ではない)"
-
-#: admin.py
+#: admin.py:397
+#, python-format
 msgid "Task execution completed: %(results)s."
 msgstr "タスク実行完了: %(results)s。"
 
-#: admin.py
+#: admin.py:402
+msgid "Retry failed tasks"
+msgstr "失敗したタスクを再実行"
+
+#: admin.py:445
+#, python-format
+msgid "%(count)d failed again"
+msgstr "%(count)d件再度失敗"
+
+#: admin.py:448
+#, python-format
+msgid "%(count)d skipped (not FAILED)"
+msgstr "%(count)d件スキップ (FAILED状態ではない)"
+
+#: admin.py:453
+#, python-format
 msgid "Retry completed: %(results)s."
 msgstr "再試行完了: %(results)s。"
 
-#: management/commands/run_redis_tasks.py
-msgid "Run a worker to process Redis tasks"
-msgstr "Redisタスクを処理するワーカーを実行"
+#: admin.py:458
+msgid "Delete selected tasks"
+msgstr "選択されたタスクを削除"
 
-#: management/commands/run_redis_tasks.py
-msgid "Process only tasks from specific queue"
-msgstr "特定のキューからのタスクのみを処理"
+#: admin.py:475
+#, python-format
+msgid "%(count)d task(s) deleted."
+msgstr "%(count)d件のタスクを削除しました。"
 
-#: management/commands/run_redis_tasks.py
-msgid "Backend name (default: default)"
-msgstr "バックエンド名 (デフォルト: default)"
+#: apps.py:8 models.py:31
+msgid "Redis Tasks"
+msgstr "Redisタスク"
 
-#: management/commands/run_redis_tasks.py
-msgid "Run continuously (don't exit when queue is empty)"
-msgstr "継続的に実行 (キューが空になっても終了しない)"
-
-#: management/commands/run_redis_tasks.py
-msgid "Polling interval in seconds (default: 1.0)"
-msgstr "ポーリング間隔（秒）(デフォルト: 1.0)"
-
-#: management/commands/run_redis_tasks.py
-msgid "Maximum number of tasks to process (0 = unlimited)"
-msgstr "処理する最大タスク数 (0 = 無制限)"
-
-#: management/commands/run_redis_tasks.py
-msgid "Stale task claim interval in seconds (default: 60.0)"
-msgstr "古いタスクの奪取間隔（秒）(デフォルト: 60.0)"
-
-#: management/commands/purge_completed_redis_tasks.py
+#: management/commands/purge_completed_redis_tasks.py:18
 msgid "Delete completed Redis tasks older than specified days"
 msgstr "指定日数より古い完了済みRedisタスクを削除"
 
-#: management/commands/purge_completed_redis_tasks.py
+#: management/commands/purge_completed_redis_tasks.py:25
 msgid "Delete tasks completed more than N days ago (default: 7)"
 msgstr "N日以上前に完了したタスクを削除 (デフォルト: 7)"
 
-#: management/commands/purge_completed_redis_tasks.py
-msgid "Status to delete (can be specified multiple times, default: SUCCESSFUL,FAILED)"
+#: management/commands/purge_completed_redis_tasks.py:33
+msgid ""
+"Status to delete (can be specified multiple times, default: SUCCESSFUL,"
+"FAILED)"
 msgstr "削除対象のステータス (複数指定可、デフォルト: SUCCESSFUL,FAILED)"
 
-#: management/commands/purge_completed_redis_tasks.py
+#: management/commands/purge_completed_redis_tasks.py:39
+msgid "Only delete tasks with this task path (default: all tasks)"
+msgstr "このタスクパスのタスクのみを削除 (デフォルト: すべてのタスク)"
+
+#: management/commands/purge_completed_redis_tasks.py:45
+#: management/commands/rebuild_redis_status_index.py:30
 msgid "Tasks read per round trip (default: REDIS_SCAN_BATCH_SIZE)"
 msgstr "1回の往復で読み取るタスク数 (デフォルト: REDIS_SCAN_BATCH_SIZE)"
 
-#: management/commands/purge_completed_redis_tasks.py
+#: management/commands/purge_completed_redis_tasks.py:51
 msgid "Only show count, don't actually delete"
 msgstr "カウントのみ表示、実際には削除しない"
 
-#: management/commands/rebuild_redis_status_index.py
+#: management/commands/purge_completed_redis_tasks.py:57
+#: management/commands/rebuild_redis_status_index.py:36
+#: management/commands/run_redis_tasks.py:73
+msgid "Backend name (default: default)"
+msgstr "バックエンド名 (デフォルト: default)"
+
+#: management/commands/rebuild_redis_status_index.py:23
 msgid "Rebuild the status index the task counts are read from"
 msgstr "タスク数の読み取り元となるステータス索引を再構築"
+
+#: management/commands/run_redis_tasks.py:60
+msgid "Run a worker to process Redis tasks"
+msgstr "Redisタスクを処理するワーカーを実行"
+
+#: management/commands/run_redis_tasks.py:67
+msgid "Process only tasks from specific queue"
+msgstr "特定のキューからのタスクのみを処理"
+
+#: management/commands/run_redis_tasks.py:79
+msgid "Run continuously (don't exit when queue is empty)"
+msgstr "継続的に実行 (キューが空になっても終了しない)"
+
+#: management/commands/run_redis_tasks.py:85
+msgid "Polling interval in seconds (default: 1.0)"
+msgstr "ポーリング間隔（秒）(デフォルト: 1.0)"
+
+#: management/commands/run_redis_tasks.py:91
+msgid "Maximum number of tasks to process (0 = unlimited)"
+msgstr "処理する最大タスク数 (0 = 無制限)"
+
+#: management/commands/run_redis_tasks.py:97
+msgid "Stale task claim interval in seconds (default: 60.0)"
+msgstr "古いタスクの奪取間隔（秒）(デフォルト: 60.0)"
+
+#: management/commands/run_redis_tasks.py:104
+msgid ""
+"Maximum seconds to wait for the running task after receiving SIGTERM/SIGINT "
+"before forcing exit (0=wait indefinitely, default: 0)"
+msgstr "SIGTERM/SIGINTを受信してから強制終了するまで、実行中のタスクを待つ最大秒数 (0=無期限に待つ、デフォルト: 0)"
+
+#: management/commands/run_redis_tasks.py:112
+msgid ""
+"Do not install SIGTERM/SIGINT handlers; the process is terminated "
+"immediately, even while a task is running"
+msgstr "SIGTERM/SIGINTハンドラーを設定しない。タスクの実行中でもプロセスは即座に終了する"
+
+#: management/commands/run_redis_tasks.py:122
+msgid ""
+"Exit with this code when no task was processed, so a job scheduler can tell "
+"an idle run from a real one (0=exit normally, default: 0)"
+msgstr "タスクを1件も処理しなかった場合にこの終了コードで終了する。ジョブスケジューラーが空振りの実行を区別できるようにする (0=通常どおり終了、デフォルト: 0)"
+
+#: management/commands/run_redis_tasks.py:133
+msgid ""
+"Exit with this code when at least one task failed or could not be run. Takes "
+"precedence over --empty-exit-code (0=exit normally, default: 0)"
+msgstr "1件以上のタスクが失敗した、または実行できなかった場合にこの終了コードで終了する。--empty-exit-codeより優先される (0=通常どおり終了、デフォルト: 0)"
+
+#: models.py:29
+msgid "Can run Redis task"
+msgstr "Redisタスクを実行できる"
+
+#: models.py:30
+msgid "Redis Task"
+msgstr "Redisタスク"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:8
+msgid "Home"
+msgstr "ホーム"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:106
+msgid "Task Information"
+msgstr "タスク情報"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:109
+msgid "Task ID"
+msgstr "タスクID"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:125
+msgid "Queue Name"
+msgstr "キュー名"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:129
+msgid "Backend"
+msgstr "バックエンド"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:136
+msgid "Timestamps"
+msgstr "日時"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:143
+msgid "Run After"
+msgstr "実行予定日時"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:147
+msgid "Started At"
+msgstr "開始日時"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:151
+msgid "Finished At"
+msgstr "終了日時"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:158
+msgid "Arguments"
+msgstr "引数"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:161
+msgid "Args"
+msgstr "位置引数"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:166
+#: templates/admin/django_tasks_redis/redistask/detail.html:176
+msgid "None"
+msgstr "なし"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:171
+msgid "Kwargs"
+msgstr "キーワード引数"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:185
+msgid "Return Value"
+msgstr "戻り値"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:188
+msgid "Result"
+msgstr "結果"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:199
+msgid "Error Information"
+msgstr "エラー情報"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:202
+msgid "Errors"
+msgstr "エラー"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:213
+msgid "Worker Information"
+msgstr "ワーカー情報"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:216
+msgid "Worker IDs"
+msgstr "ワーカーID"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:225
+msgid "Task Not Found"
+msgstr "タスクが見つかりません"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:226
+#, python-format
+msgid "The task with ID <code>%(task_id)s</code> was not found."
+msgstr "ID <code>%(task_id)s</code> のタスクは見つかりませんでした。"
+
+#: templates/admin/django_tasks_redis/redistask/detail.html:231
+msgid "Back to Task List"
+msgstr "タスク一覧に戻る"
