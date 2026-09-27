@@ -226,7 +226,7 @@ msgstr "バックエンド"
 
 #: templates/admin/django_tasks_redis/redistask/detail.html:136
 msgid "Timestamps"
-msgstr "日時"
+msgstr "タイムスタンプ"
 
 #: templates/admin/django_tasks_redis/redistask/detail.html:143
 msgid "Run After"
