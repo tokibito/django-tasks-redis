@@ -1328,17 +1328,23 @@ class RedisTaskBackend(BaseTaskBackend):
 
     def _read_status_index(self, queue_name=None):
         """
-        The counts per status and the READY waiting-time bounds, from the index.
+        The counts per status and the pending bounds, from the index.
 
         Entries older than the TTL of their status are pruned first: their
         hash has expired, and nothing else takes them out of the set.
 
+        The READY set is scored by the time a task starts waiting, so the
+        tasks that are due are the entries scored up to now, and the delayed
+        tasks whose time has not come are the rest.
+
         Returns:
-            Tuple of (counts dict, oldest waiting-since datetime, newest
-            waiting-since datetime), like :meth:`_scan_status_counts`.
+            Tuple of (counts dict, pending count, oldest waiting-since
+            datetime, newest waiting-since datetime), like
+            :meth:`_scan_status_counts`.
         """
         client = self.get_client()
         now = timezone.now()
+        now_timestamp = now.timestamp()
         # An empty queue name means every queue, as it does for the scan.
         queue_name = queue_name or None
         pipeline = client.pipeline(transaction=False)
@@ -1358,25 +1364,32 @@ class RedisTaskBackend(BaseTaskBackend):
         ready_key = get_status_index_key(
             self.key_prefix, self.alias, TaskResultStatus.READY, queue_name
         )
-        pipeline.zrange(ready_key, 0, 0, withscores=True)
-        pipeline.zrange(ready_key, -1, -1, withscores=True)
+        pipeline.zcount(ready_key, "-inf", now_timestamp)
+        pipeline.zrangebyscore(
+            ready_key, "-inf", now_timestamp, start=0, num=1, withscores=True
+        )
+        pipeline.zrevrangebyscore(
+            ready_key, now_timestamp, "-inf", start=0, num=1, withscores=True
+        )
 
         replies = pipeline.execute()
         counts = {
             status: replies[position] for status, position in count_positions.items()
         }
+        pending_count = replies[-3]
         oldest = replies[-2]
         newest = replies[-1]
         return (
             counts,
+            pending_count,
             deserialize_timestamp(oldest[0][1]) if oldest else None,
             deserialize_timestamp(newest[0][1]) if newest else None,
         )
 
     def _status_counts(self, queue_name=None):
         """
-        The counts and READY bounds from the index, or from a scan until it
-        is built.
+        The counts, the pending count and the pending bounds from the index,
+        or from a scan until it is built.
         """
         if self.has_status_index():
             return self._read_status_index(queue_name)
@@ -1406,25 +1419,26 @@ class RedisTaskBackend(BaseTaskBackend):
         Returns:
             Dict mapping status to count.
         """
-        counts, _oldest, _newest = self._status_counts(queue_name)
+        counts, _pending_count, _oldest, _newest = self._status_counts(queue_name)
         return counts
 
     def _scan_status_counts(self, queue_name=None):
         """
         One pass over the results index for the status-count based APIs.
 
-        Returns the counts per status and, from the same scan, the time the
-        oldest and newest READY task started waiting, as
-        ``max(enqueued_at, run_after)`` datetimes, so a caller that wants
-        both does not read the index twice.
+        Returns the counts per status and, from the same scan, the number of
+        pending tasks and the time the oldest and newest of them started
+        waiting, as ``max(enqueued_at, run_after)`` datetimes, so a caller
+        that wants both does not read the index twice. A pending task is a
+        READY task that is due: one whose waiting time has come.
 
         Args:
             queue_name: Optional queue name filter.
 
         Returns:
-            Tuple of (counts dict, oldest waiting-since datetime, newest
-            waiting-since datetime). Both are None when no READY task was
-            found.
+            Tuple of (counts dict, pending count, oldest waiting-since
+            datetime, newest waiting-since datetime). Both datetimes are None
+            when no pending task was found.
         """
         counts = {
             TaskResultStatus.READY: 0,
@@ -1432,7 +1446,9 @@ class RedisTaskBackend(BaseTaskBackend):
             TaskResultStatus.SUCCESSFUL: 0,
             TaskResultStatus.FAILED: 0,
         }
+        pending_count = 0
         oldest = newest = None
+        now = timezone.now()
 
         for _task_id, task_data in self.iter_task_data():
             if queue_name and task_data.get("queue_name") != queue_name:
@@ -1444,13 +1460,16 @@ class RedisTaskBackend(BaseTaskBackend):
 
             if status == TaskResultStatus.READY:
                 waiting_since = self._waiting_since(task_data)
+                if waiting_since is not None and waiting_since > now:
+                    continue
+                pending_count += 1
                 if waiting_since is not None:
                     if oldest is None or waiting_since < oldest:
                         oldest = waiting_since
                     if newest is None or waiting_since > newest:
                         newest = waiting_since
 
-        return counts, oldest, newest
+        return counts, pending_count, oldest, newest
 
     def get_queue_stats(self, queue_name=None):
         """
@@ -1463,26 +1482,27 @@ class RedisTaskBackend(BaseTaskBackend):
             Dict with the counts per status (``pending_count``,
             ``running_count``, ``successful_count``, ``failed_count``), the
             number of delayed tasks not yet due (``delayed_count``), and the
-            time the oldest and newest READY task started waiting
+            time the oldest and newest pending task started waiting
             (``oldest_pending_waiting_since``, ``newest_pending_waiting_since``):
-            ``max(enqueued_at, run_after)``, None when there is none. A
-            delayed task whose time has not come is READY in the store, so it
-            is part of the pending count; its waiting time starts at its
-            ``run_after``, which can lie in the future.
-        """
-        counts, oldest, newest = self._status_counts(queue_name)
+            ``max(enqueued_at, run_after)``, None when there is none.
 
-        delayed_count = 0
-        client = self.get_client()
-        for qname in self.broker.queue_names(queue_name):
-            delayed_count += client.zcard(self.broker.delayed_key(qname))
+            A pending task is one a worker would pick up now: a READY task
+            whose ``run_after`` is unset or has passed, as counted by
+            ``get_pending_task_count()``. A READY task whose ``run_after``
+            lies in the future is counted in ``delayed_count`` instead, so
+            the two add up to the READY count of :meth:`get_status_counts`.
+        """
+        counts, pending_count, oldest, newest = self._status_counts(queue_name)
+        ready_count = counts.get(TaskResultStatus.READY, 0)
 
         return {
-            "pending_count": counts.get(TaskResultStatus.READY, 0),
+            "pending_count": pending_count,
             "running_count": counts.get(TaskResultStatus.RUNNING, 0),
             "successful_count": counts.get(TaskResultStatus.SUCCESSFUL, 0),
             "failed_count": counts.get(TaskResultStatus.FAILED, 0),
-            "delayed_count": delayed_count,
+            # The pipeline is not a transaction: a task enqueued between the
+            # two counts must not make this negative.
+            "delayed_count": max(ready_count - pending_count, 0),
             "oldest_pending_waiting_since": oldest,
             "newest_pending_waiting_since": newest,
         }

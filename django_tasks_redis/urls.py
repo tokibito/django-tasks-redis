@@ -23,6 +23,7 @@ urlpatterns = [
     path(
         "execute/<uuid:task_id>/", views.ExecuteTaskView.as_view(), name="execute_task"
     ),
+    path("status/", views.QueueStatsView.as_view(), name="queue_stats"),
     path("status/<uuid:task_id>/", views.TaskStatusView.as_view(), name="task_status"),
     path("purge/", views.PurgeCompletedTasksView.as_view(), name="purge_completed"),
 ]

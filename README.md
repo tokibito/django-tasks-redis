@@ -642,11 +642,22 @@ if stats["oldest_pending_waiting_since"]:
     print(f"oldest pending task has waited for {age.total_seconds():.0f}s")
 ```
 
-With `queue_name="emails"` the numbers cover that queue alone. A delayed task
-whose time has not come is READY in the store, so it is part of the pending
-count, but its waiting time starts at its `run_after`, which can lie in the
-future: a task that is not due yet does not read as queue age, and while only
-such tasks are pending, the wait printed above is negative.
+With `queue_name="emails"` the numbers cover that queue alone. A pending task
+is one a worker would pick up now: a READY task whose `run_after` is unset or
+has passed. A delayed task whose time has not come is counted in
+`delayed_count` instead, so `pending_count + delayed_count` is the READY count
+of `get_task_counts()`, and a task that is not due yet does not read as queue
+age. `get_pending_task_count()` returns the same `pending_count`.
+
+The same dict is served over HTTP by `GET /tasks/status/` (see
+[HTTP Endpoints](#http-endpoints)), with the datetimes as ISO 8601 strings:
+
+```json
+{"pending_count": 5, "running_count": 1, "successful_count": 120,
+ "failed_count": 2, "delayed_count": 3,
+ "oldest_pending_waiting_since": "2026-09-30T01:02:03.456Z",
+ "newest_pending_waiting_since": "2026-09-30T01:04:05.678Z"}
+```
 
 The counts and the waiting times are read from a status index — one sorted
 set per status, for the backend and for each queue, holding the tasks in that
@@ -970,6 +981,8 @@ Available endpoints:
 - `POST /tasks/run/` - Process multiple tasks
 - `POST /tasks/run-one/` - Process a single task
 - `POST /tasks/execute/<task_id>/` - Execute specific task by ID
+- `GET /tasks/status/` - Get the queue statistics of `get_queue_stats()`
+  (`?queue_name=` for one queue)
 - `GET /tasks/status/<task_id>/` - Get task status
 - `POST /tasks/purge/` - Purge completed tasks
 

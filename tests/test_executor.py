@@ -71,6 +71,62 @@ class TestExecutor:
 
         assert executor.get_pending_task_count() == 2
 
+    def test_get_pending_task_count_excludes_delayed(self, clean_redis):
+        """Test that a delayed task not yet due is not counted as pending."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 1)
+        simple_task.using(run_after=timezone.now() + timedelta(hours=1)).enqueue(2, 2)
+
+        assert executor.get_pending_task_count() == 1
+        assert executor.get_task_counts()["READY"] == 2
+
+    def test_stats_functions_are_exported_from_the_package(self):
+        """The stats functions can be imported from the package itself."""
+        import django_tasks_redis
+
+        for name in ("get_pending_task_count", "get_queue_stats", "get_task_counts"):
+            assert getattr(django_tasks_redis, name) is getattr(executor, name)
+            assert name in django_tasks_redis.__all__
+
+        with pytest.raises(AttributeError):
+            getattr(django_tasks_redis, "no_such_name")  # noqa: B009
+
+    def test_get_queue_stats_due_delayed_task_is_pending(
+        self, redis_backend, clean_redis
+    ):
+        """Test that a delayed task whose time has come is pending."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from django_tasks_redis.utils import get_result_key, serialize_datetime
+        from tests.tasks import simple_task
+
+        result = simple_task.using(
+            run_after=timezone.now() + timedelta(hours=1)
+        ).enqueue(1, 1)
+        due_time = timezone.now() - timedelta(minutes=1)
+        client = redis_backend.get_client()
+        result_key = get_result_key(
+            redis_backend.key_prefix, redis_backend.alias, result.id
+        )
+        client.hset(result_key, "run_after", serialize_datetime(due_time))
+
+        # The hash was edited behind the index: rebuild it from the hashes.
+        # No worker has promoted it from the delayed set, and it is due all
+        # the same.
+        redis_backend.rebuild_status_index()
+
+        stats = executor.get_queue_stats()
+
+        assert stats["pending_count"] == 1
+        assert stats["delayed_count"] == 0
+
     def test_run_task_by_id(self, clean_redis):
         """Test running a specific task by ID."""
         from tests.tasks import simple_task
@@ -207,8 +263,8 @@ class TestExecutor:
         assert stats["oldest_pending_waiting_since"] == old_time
         assert stats["newest_pending_waiting_since"] == new_time
 
-    def test_get_queue_stats_delayed_waiting_since(self, redis_backend, clean_redis):
-        """Test that a delayed task starts waiting at its run_after time."""
+    def test_get_queue_stats_delayed_not_pending(self, redis_backend, clean_redis):
+        """Test that a delayed task not yet due is not pending."""
         from datetime import timedelta
 
         from django.utils import timezone
@@ -231,10 +287,10 @@ class TestExecutor:
 
         stats = executor.get_queue_stats()
 
-        assert stats["pending_count"] == 1
+        assert stats["pending_count"] == 0
         assert stats["delayed_count"] == 1
-        assert stats["oldest_pending_waiting_since"] == run_after
-        assert stats["newest_pending_waiting_since"] == run_after
+        assert stats["oldest_pending_waiting_since"] is None
+        assert stats["newest_pending_waiting_since"] is None
 
     def test_get_queue_stats_past_run_after(self, redis_backend, clean_redis):
         """Test that a due task's waiting time starts at its run_after time."""
@@ -312,7 +368,7 @@ class TestExecutor:
     def test_get_queue_stats_future_run_after_other_offset(
         self, redis_backend, clean_redis
     ):
-        """Test that a future run_after with another offset is the waiting time."""
+        """Test that a future run_after with another offset is not yet due."""
         from datetime import timedelta
         from datetime import timezone as datetime_timezone
 
@@ -344,9 +400,10 @@ class TestExecutor:
 
         stats = executor.get_queue_stats()
 
-        assert stats["pending_count"] == 1
-        assert stats["oldest_pending_waiting_since"] == run_after
-        assert stats["newest_pending_waiting_since"] == run_after
+        assert stats["pending_count"] == 0
+        assert stats["delayed_count"] == 1
+        assert stats["oldest_pending_waiting_since"] is None
+        assert stats["newest_pending_waiting_since"] is None
 
     def test_get_queue_stats_no_pending(self, clean_redis):
         """Test that the waiting times are None when no task is READY."""

@@ -212,6 +212,10 @@ def get_pending_task_count(queue_name=None, backend_name="default"):
     """
     Get the count of pending tasks.
 
+    A pending task is one a worker would pick up now: a READY task whose
+    ``run_after`` is unset or has passed. A delayed task whose time has not
+    come is left out.
+
     Args:
         queue_name: Optional queue name to filter tasks.
         backend_name: Backend name (default: "default").
@@ -225,8 +229,7 @@ def get_pending_task_count(queue_name=None, backend_name="default"):
         >>> print(f"Pending tasks: {count}")
     """
     backend = task_backends[backend_name]
-    counts = backend.get_status_counts(queue_name=queue_name)
-    return counts.get(TaskResultStatus.READY, 0)
+    return backend.get_queue_stats(queue_name=queue_name)["pending_count"]
 
 
 def run_task_by_id(task_id, backend_name="default", worker_id=None, allow_retry=False):
@@ -533,7 +536,8 @@ def get_task_counts(backend_name="default", queue_name=None):
         queue_name: Optional queue name filter.
 
     Returns:
-        Dict mapping status to count.
+        Dict mapping status to count. READY includes the delayed tasks whose
+        ``run_after`` has not come.
     """
     backend = task_backends[backend_name]
     return backend.get_status_counts(queue_name=queue_name)
@@ -554,7 +558,8 @@ def get_queue_stats(backend_name="default", queue_name=None):
         (``delayed_count``), and the time the oldest and newest pending
         task started waiting (``oldest_pending_waiting_since``,
         ``newest_pending_waiting_since``), ``max(enqueued_at, run_after)``,
-        None when the queue has none.
+        None when the queue has none. ``pending_count`` is the count of
+        :func:`get_pending_task_count`, so it leaves out the delayed tasks.
     """
     backend = task_backends[backend_name]
     return backend.get_queue_stats(queue_name=queue_name)

@@ -104,6 +104,7 @@ The package also exposes HTTP endpoints at `/tasks/`:
 - `POST /tasks/run/` - Process multiple tasks
 - `POST /tasks/run-one/` - Process a single task
 - `POST /tasks/execute/<task_id>/` - Execute specific task
+- `GET /tasks/status/` - Get the queue statistics
 - `GET /tasks/status/<task_id>/` - Get task status
 - `POST /tasks/purge/` - Purge completed tasks
 

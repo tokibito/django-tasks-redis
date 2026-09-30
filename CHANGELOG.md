@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`GET /tasks/status/` serves the queue statistics.** Without a task id,
+  the status endpoint returns the dict of `get_queue_stats()` as JSON, the
+  datetimes as ISO 8601 strings, scoped to one queue with `?queue_name=`. It
+  is guarded by the same `status` authentication as
+  `GET /tasks/status/<task_id>/`, and has the same shape as the `status/`
+  endpoint of django-database-task.
+- `get_pending_task_count()`, `get_queue_stats()` and `get_task_counts()` can
+  be imported from `django_tasks_redis` itself, as they can from
+  `django_database_task`.
+
+### Changed
+
+- **The pending count leaves out the delayed tasks that are not due.**
+  `get_pending_task_count()` and the `pending_count` of `get_queue_stats()`
+  count the READY tasks a worker would pick up now, the ones whose
+  `run_after` is unset or has passed, as django-database-task does; a delayed
+  task whose time has not come is counted in `delayed_count` only, so the two
+  add up to the READY count of `get_task_counts()`. The
+  `oldest_pending_waiting_since` and `newest_pending_waiting_since` bounds
+  follow, so they no longer lie in the future. `delayed_count` is now read
+  from the READY index as well, so a delayed task whose time has come but
+  that no worker has moved to its stream yet counts as pending, not delayed.
+  A dashboard or an alert on `pending_count` that relied on the delayed tasks
+  being part of it adds `delayed_count` back.
+
 ## 0.4.0
 
 **A deployment upgrading with stored results runs

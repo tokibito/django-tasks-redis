@@ -190,6 +190,43 @@ class ExecuteTaskView(TaskEndpointMixin, View):
         )
 
 
+class QueueStatsView(TaskEndpointMixin, View):
+    """
+    Get the queue statistics via HTTP GET.
+
+    Query parameters:
+        queue_name: Optional queue name to filter tasks
+        backend_name: Backend name (default: "default")
+
+    Response:
+        {
+            "pending_count": 5,
+            "running_count": 1,
+            "successful_count": 120,
+            "failed_count": 2,
+            "delayed_count": 3,
+            "oldest_pending_waiting_since": "2026-09-30T01:02:03.456Z",
+            "newest_pending_waiting_since": "2026-09-30T01:04:05.678Z"
+        }
+
+    Both ``*_waiting_since`` values are None while no task is pending. See
+    ``RedisTaskBackend.get_queue_stats()`` for what each value counts.
+    """
+
+    auth_endpoint = "status"
+    http_method_names = ["get"]
+
+    def get(self, request):
+        queue_name = request.GET.get("queue_name")
+        backend_name = request.GET.get("backend_name", "default")
+
+        stats = executor.get_queue_stats(
+            backend_name=backend_name, queue_name=queue_name
+        )
+
+        return JsonResponse(stats)
+
+
 class TaskStatusView(TaskEndpointMixin, View):
     """Get task status by ID."""
 

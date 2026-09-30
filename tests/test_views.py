@@ -21,6 +21,7 @@ class TestTaskEndpointAuth:
             ("post", "/tasks/run/"),
             ("post", "/tasks/run-one/"),
             ("post", "/tasks/purge/"),
+            ("get", "/tasks/status/"),
             ("get", "/tasks/status/00000000-0000-0000-0000-000000000000/"),
             ("post", "/tasks/execute/00000000-0000-0000-0000-000000000000/"),
         ],
@@ -251,6 +252,63 @@ class TestTaskEndpointInput:
         )
 
         assert response.status_code == 404
+
+
+@pytest.mark.django_db
+class TestQueueStatsView:
+    """Tests for QueueStatsView."""
+
+    def test_queue_stats(self, clean_redis, auth_client):
+        """The queue statistics come back as get_queue_stats() returns them."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from tests.tasks import email_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        simple_task.using(run_after=timezone.now() + timedelta(hours=1)).enqueue(3, 4)
+        email_task.enqueue("to@example.com", "Hi", "body")
+
+        response = auth_client.get("/tasks/status/")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["pending_count"] == 2
+        assert data["delayed_count"] == 1
+        assert data["running_count"] == 0
+        assert data["successful_count"] == 0
+        assert data["failed_count"] == 0
+        oldest = timezone.datetime.fromisoformat(data["oldest_pending_waiting_since"])
+        newest = timezone.datetime.fromisoformat(data["newest_pending_waiting_since"])
+        assert oldest <= newest <= timezone.now()
+
+    def test_queue_stats_queue_filter(self, clean_redis, auth_client):
+        """queue_name scopes the statistics to one queue."""
+        from tests.tasks import email_task, simple_task
+
+        simple_task.enqueue(1, 2)
+        email_task.enqueue("to@example.com", "Hi", "body")
+
+        response = auth_client.get("/tasks/status/", {"queue_name": "emails"})
+
+        assert response.status_code == 200
+        assert response.json()["pending_count"] == 1
+
+    def test_queue_stats_empty(self, clean_redis, auth_client):
+        """With no pending task the waiting times are null."""
+        response = auth_client.get("/tasks/status/")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["pending_count"] == 0
+        assert data["oldest_pending_waiting_since"] is None
+        assert data["newest_pending_waiting_since"] is None
+
+    def test_queue_stats_is_get_only(self, clean_redis, auth_client):
+        response = auth_client.post("/tasks/status/")
+
+        assert response.status_code == 405
 
 
 @pytest.mark.django_db

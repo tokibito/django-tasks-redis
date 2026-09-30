@@ -55,7 +55,7 @@ def wipe_index(backend):
 
 
 def scan_counts(backend, queue_name=None):
-    counts, _oldest, _newest = backend._scan_status_counts(queue_name)
+    counts, _pending_count, _oldest, _newest = backend._scan_status_counts(queue_name)
     return counts
 
 
@@ -327,11 +327,40 @@ class TestStatusIndexCounts:
         self.enqueue_a_mix(redis_backend)
 
         for queue_name in (None, "default", "emails"):
-            counts, oldest, newest = redis_backend._scan_status_counts(queue_name)
+            counts, pending_count, oldest, newest = redis_backend._scan_status_counts(
+                queue_name
+            )
             stats = redis_backend.get_queue_stats(queue_name)
-            assert stats["pending_count"] == counts[TaskResultStatus.READY]
+            assert stats["pending_count"] == pending_count, queue_name
+            assert (
+                stats["delayed_count"] == counts[TaskResultStatus.READY] - pending_count
+            ), queue_name
             assert stats["oldest_pending_waiting_since"] == oldest, queue_name
             assert stats["newest_pending_waiting_since"] == newest, queue_name
+
+        # The delayed task is READY but not pending.
+        stats = redis_backend.get_queue_stats()
+        assert stats["pending_count"] == 4
+        assert stats["delayed_count"] == 1
+
+    def test_scan_leaves_the_delayed_tasks_out_of_pending(
+        self, redis_backend, clean_redis
+    ):
+        """Until the index is built, the scan splits READY the same way."""
+        from tests.tasks import simple_task
+
+        simple_task.enqueue(1, 2)
+        simple_task.using(
+            run_after=timezone.now() + timezone.timedelta(minutes=5)
+        ).enqueue(3, 4)
+        wipe_index(redis_backend)
+        redis_backend._status_index_warned = True
+
+        stats = redis_backend.get_queue_stats()
+
+        assert redis_backend.get_status_counts()[TaskResultStatus.READY] == 2
+        assert stats["pending_count"] == 1
+        assert stats["delayed_count"] == 1
 
     def test_expired_entries_are_dropped(self, redis_backend, clean_redis):
         """An entry older than its status' TTL has no hash and is not counted."""
@@ -447,6 +476,7 @@ class TestStatusIndexBuild:
 
         assert counts[TaskResultStatus.READY] == 2
         assert stats["pending_count"] == 2
+        assert stats["delayed_count"] == 0
         warnings = [
             r for r in caplog.records if "rebuild_redis_status_index" in r.message
         ]
