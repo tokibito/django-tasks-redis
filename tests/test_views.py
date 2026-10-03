@@ -237,6 +237,12 @@ class TestTaskEndpointInput:
         assert response.status_code == 400
         assert "error" in response.json()
 
+    def test_negative_days_is_rejected(self, clean_redis, auth_client):
+        response = auth_client.post("/tasks/purge/", {"days": "-1"})
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "days must be a non-negative integer"
+
     def test_status_of_unknown_task_is_not_found(self, clean_redis, auth_client):
         """A well-formed id that is not in Redis reaches the view's own 404."""
         response = auth_client.get(
