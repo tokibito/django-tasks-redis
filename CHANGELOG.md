@@ -29,6 +29,15 @@
   A dashboard or an alert on `pending_count` that relied on the delayed tasks
   being part of it adds `delayed_count` back.
 
+### Fixed
+
+- **A negative `days` on `POST /tasks/purge/` raised a 500.** The endpoint
+  forwarded it to `purge_completed_tasks()`, whose `ValueError` escaped as an
+  error page, where the management command and the executor already rejected
+  it. The endpoint now answers `days must be a non-negative integer` with a
+  400, as django-database-task does. Valid requests are unchanged.
+  ([#60](https://github.com/tokibito/django-tasks-redis/issues/60))
+
 ## 0.4.0
 
 **A deployment upgrading with stored results runs

@@ -254,6 +254,10 @@ class PurgeCompletedTasksView(TaskEndpointMixin, View):
         days = _int_param(request.POST, "days", 7)
         if days is None:
             return JsonResponse({"error": "days must be an integer"}, status=400)
+        if days < 0:
+            return JsonResponse(
+                {"error": "days must be a non-negative integer"}, status=400
+            )
 
         deleted_count = executor.purge_completed_tasks(
             backend_name=backend_name,
