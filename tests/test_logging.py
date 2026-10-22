@@ -43,6 +43,29 @@ class TestTaskLogFields:
 
         assert fields["worker_id"] is None
 
+    def test_worker_fields_join_the_supervisors_records(self):
+        """
+        pid and worker_index merge into the task fields, so a task record
+        joins with the supervisor's on pid. The index is left out when the
+        process has none.
+        """
+        import os
+
+        from django_tasks_redis import supervisor
+
+        fields = task_log_fields({"task_id": "t", "task_path": "p"})
+
+        assert fields["pid"] == os.getpid()
+        assert "worker_index" not in fields
+
+        supervisor.set_worker_index(3)
+        try:
+            fields = task_log_fields({"task_id": "t", "task_path": "p"})
+        finally:
+            supervisor.set_worker_index(None)
+
+        assert fields["worker_index"] == 3
+
     def test_extra_is_merged_last(self):
         fields = task_log_fields(
             {"task_id": "t", "task_path": "p"},
@@ -116,6 +139,8 @@ class TestRunTaskLogging:
     """Every task record run_task() emits carries the structured fields."""
 
     def test_started_record_fires_with_fields(self, redis_backend, clean_redis, caplog):
+        import os
+
         from tests.tasks import simple_task
 
         result = simple_task.enqueue(1, 2)
@@ -132,6 +157,7 @@ class TestRunTaskLogging:
         assert record.task_id == task_id
         assert record.task_path.endswith("simple_task")
         assert record.worker_id == "w-log"
+        assert record.pid == os.getpid()
         assert record.backend_alias == redis_backend.alias
 
     def test_completed_record_has_status_and_duration(
@@ -251,6 +277,7 @@ class TestRunRedisTasksLogging:
         message named still carries the full task field set, read from
         the broker message itself.
         """
+        import os
         from io import StringIO
         from unittest.mock import patch
 
@@ -287,6 +314,8 @@ class TestRunRedisTasksLogging:
         # Filled in by hand at the call site: the stream entry carries no
         # backend_name for task_log_fields to read.
         assert record.backend_alias == redis_backend.alias
+        # The task fields merge the worker's own, as the supervisor's do.
+        assert record.pid == os.getpid()
         # The worker in the message and in the field are the same worker.
         assert record.getMessage() == (
             f"Worker {record.worker_id} failed to process a task"
@@ -298,6 +327,7 @@ class TestRunRedisTasksLogging:
         carries the worker's own context instead, and the failure is not
         counted against the tasks.
         """
+        import os
         from io import StringIO
         from unittest.mock import patch
 
@@ -329,6 +359,9 @@ class TestRunRedisTasksLogging:
         assert record.worker_id == finished[0].worker_id
         assert record.backend_alias == "default"
         assert record.queue_name == "default"
+        # The same set as Worker started and Worker finished, so all three
+        # join on pid.
+        assert record.pid == finished[0].pid == os.getpid()
         assert record.getMessage() == (
             f"Worker {record.worker_id} failed to receive a task"
         )

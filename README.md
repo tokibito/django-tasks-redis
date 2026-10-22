@@ -15,6 +15,7 @@ A Redis/Valkey-backed task queue backend for Django 6.0's built-in task framewor
 - Delayed task execution with scheduled times
 - Priority-based task processing
 - Graceful shutdown: workers finish the running task before exiting on `SIGTERM`
+- Parallel workers: `--workers N` keeps N worker processes running from one command
 - Crash recovery with automatic task reclaim
 - Django Admin integration for task monitoring and management
 - HTTP endpoints for external triggers (webhooks, Cloud Scheduler, etc.)
@@ -228,6 +229,7 @@ Options:
   --interval SECONDS        Polling interval (default: 1)
   --max-tasks N             Maximum tasks to process (0=unlimited)
   --claim-interval SECS     Stale task claim interval (default: 60)
+  --workers N               Worker processes to run from one command (default: 1)
   --shutdown-timeout SECS   Maximum wait for the running task after SIGTERM/SIGINT
                             before forcing exit (0=wait indefinitely, default: 0)
   --no-graceful-shutdown    Do not install SIGTERM/SIGINT handlers
@@ -237,7 +239,8 @@ Options:
 ```
 
 A worker handles one task at a time. Run several processes to process more,
-each gets its own consumer in the group.
+each gets its own consumer in the group; `--workers N` runs them from one
+command. See [Running several workers](#running-several-workers).
 
 In `--continuous` mode the worker waits on the streams for up to
 `REDIS_BLOCK_TIMEOUT` instead of polling, so `--interval` only applies when
@@ -530,14 +533,16 @@ Every task record carries:
 | `priority` | Priority it was enqueued with |
 | `backend_alias` | Key in the `TASKS` setting |
 | `worker_id` | `hostname-xxxxxxxx` of the worker that ran it |
+| `pid` | Process id of the process that logged it |
+| `worker_index` | The worker's index; absent when it has none (see Running several workers) |
 
 Completed runs add `status` (`SUCCESSFUL` or `FAILED`) and `duration_ms`, the
 wall time of the function call measured with `time.monotonic()` so it stays
 accurate when a recovery sweep rewrites the stored timestamps. Failures also
 add `error_class`. The worker's own start and finish records, and the record
 for a read from the broker that failed, carry `worker_id`, `backend_alias`,
-`queue_name`, and — on finish — `tasks_processed`, `tasks_failed` and
-`exit_code`.
+`queue_name` and the two worker fields above, and — on finish —
+`tasks_processed`, `tasks_failed` and `exit_code`.
 
 | Message | Level | When |
 |---------|-------|------|
@@ -705,6 +710,153 @@ without running it (`mark_task_failed`), nor when `run_task` cannot resolve
 the task object after the claim and fails the task: a duration monitor does
 not see those tasks, they show up in the failed count and in the
 `Task abandoned` or `Task could not be started` log records instead.
+
+## Running several workers
+
+`run_redis_tasks` is one process running one task at a time. To run more
+tasks at once, run more of them: the consumer group hands a message to one
+consumer, and a task is claimed with one atomic step, so workers on one host
+or on many never run the same task. There are two tiers, and they combine.
+
+**Prefer processes.** A process asks nothing of the task code and contains
+whatever goes wrong in a task, whether a process manager or `--workers`
+keeps them running.
+
+| | Unit of parallelism | Reach for it when |
+|---|---|---|
+| A process manager | Processes, kept running by systemd template units, Kubernetes replicas, supervisord `numprocs` | You have one. It restarts, logs and health-checks the workers, and the command's default (one process, with the same signals and exit codes as before) is what it expects |
+| `--workers N` | Processes, kept running by the command itself | One host without a process manager, or one unit or container that should hold N workers: a small supervisor inside the command keeps N worker processes running |
+
+### --workers N
+
+```bash
+python manage.py run_redis_tasks --continuous --workers 4
+```
+
+The command becomes a supervisor. It starts N copies of itself with
+`--workers` left off and every other option as given, so each worker is
+exactly the single-process worker: its own worker id, its own consumer in
+the group, its own `Worker started` and `Worker finished` log records. The
+supervisor runs no tasks and opens no Redis connection of its own.
+
+```console
+$ python manage.py run_redis_tasks --continuous --workers 2
+Workers: 2
+Worker command: /srv/app/venv/bin/python manage.py run_redis_tasks --continuous
+Workers that exit are restarted.
+Worker 1 started (pid 4021).
+Worker 2 started (pid 4022).
+Starting Redis task worker: web-1-3f2a9c11
+  Worker index: 1
+Starting Redis task worker: web-1-8b07e4d2
+  Worker index: 2
+^C
+Received SIGINT: stopping 2 worker(s). Waiting for them to finish (send the signal again to force exit).
+Received SIGTERM: no new tasks will be started. Waiting for the running task to finish (send the signal again to force exit).
+Received SIGTERM: no new tasks will be started. Waiting for the running task to finish (send the signal again to force exit).
+Worker 1 (pid 4021) exited with code 0.
+Worker 2 (pid 4022) exited with code 0.
+
+Shutdown complete: every worker exited.
+```
+
+- **Restarts.** With `--continuous`, a worker that exits is replaced. One
+  that exits with an error within ten seconds of starting is restarted
+  after a growing delay, from one second up to thirty, so a misconfiguration
+  does not spin. When every worker is failing that way at once, which points
+  at the configuration or a dependency that is down rather than at one bad
+  worker, the supervisor logs one `Every worker is failing to start`
+  WARNING, with `workers` and the last `exit_codes`. It logs one
+  `Workers recovered` INFO once a worker has run for ten seconds again, or
+  has exited with code 0, as a worker that reaches `--max-tasks` sooner
+  does; the record carries `worker_index`, `pid`, `failing_for` in seconds,
+  and `recovered_by` (`uptime` or `clean_exit`). A slot added with `SIGTTIN`
+  does not count until it has done one of the two. `Supervisor finished`
+  carries `restarts`, how many workers were started in place of one that
+  exited, and `abnormal_restarts`, how many of those followed an exit with
+  a code other than 0 or `--empty-exit-code`. Without `--continuous` each
+  worker drains the queue once and the command exits when all of them have:
+  the run-once shape of [Running from a job scheduler](#running-from-a-job-scheduler),
+  N at a time.
+- **`--max-tasks`** goes to each worker. With `--continuous` that is
+  gunicorn's `max_requests`: a worker exits after that many tasks and is
+  replaced, which bounds a leak in task code.
+- **Signals.** `SIGTERM` and `SIGINT` (Ctrl-Break too on Windows) are
+  handled by the supervisor, which forwards them to every worker and waits
+  for the workers to finish their running task, within `--shutdown-timeout`
+  if one is set. A worker still running past that is killed and the command
+  exits with code 1. A second signal kills the workers at once. The workers
+  are placed in a process group of their own, so a Ctrl-C typed at the
+  terminal reaches only the supervisor. With `--no-graceful-shutdown` the
+  workers are terminated on the first signal, running task or not.
+- **Scaling.** On POSIX, `SIGTTIN` sent to the supervisor starts one more
+  worker and `SIGTTOU` stops the newest one, as with gunicorn. The last
+  worker is never removed.
+- **Exit code.** Decided by the supervisor from what the workers reported:
+  `--failed-exit-code` if any worker exited with it, `--empty-exit-code` if
+  every worker did, a worker's own code if one crashed, and 0 otherwise.
+- **Logs.** The supervisor's records (`Worker process started`,
+  `Worker process exited`, `Worker process killed`) carry the worker's
+  `worker_index` and `pid`, and every record a worker writes carries the
+  same two fields next to its `worker_id`, so the two sides join on `pid`:
+  the `Worker started` that belongs to a `Worker process exited` with a
+  nonzero code is the one with the same `pid`. A restarted worker keeps its
+  slot's `worker_index` and gets a new `pid`. The index reaches the worker
+  in the `DJANGO_TASKS_REDIS_WORKER_INDEX` environment variable; a process
+  manager that starts one worker per unit can set it the same way.
+- **No liveness check.** The supervisor reacts to a worker that exits, not
+  to one that is alive and stuck: from outside, a worker in the middle of a
+  long task and a hung one look the same. A hung worker's messages are
+  reclaimed after `REDIS_CLAIM_TIMEOUT`, by the stale-message sweep of the
+  other workers' `--claim-interval`.
+
+### Trade-offs
+
+Processes are the simple, robust unit of parallelism, and they are not
+free. What `--workers N` buys and what it costs, so you can pick N with
+your eyes open:
+
+- **Isolation.** Every worker is a process of its own. A task that crashes
+  the interpreter, leaks until the OOM killer steps in, or blocks forever
+  takes one worker with it; the other N-1 keep running, and the supervisor
+  replaces the lost one. Nothing is asked of the task code.
+- **Memory.** Each worker is a full Django process, so the footprint is N
+  times the resident size of one worker, with no sharing between them (the
+  children are spawned, not forked, so copy-on-write does not help). On a
+  small host that is the limit on N. With `--continuous`, `--max-tasks`
+  bounds a slow leak in task code by recycling a worker after that many
+  tasks, in place of a memory limit.
+- **CPU.** N processes are N interpreters, each with its own GIL, so
+  CPU-bound tasks scale across cores. Past the number of cores more workers
+  only add context switching; for I/O-bound tasks, more than the core count
+  is fine and the limit is memory and connections.
+- **Sweeps.** Every worker sweeps for stale messages every
+  `--claim-interval`, so N workers are N sweepers; lengthen
+  `--claim-interval` as N grows if the load on Redis shows. Concurrent
+  sweeps are safe by construction: a message is only claimed once it has
+  been pending longer than `REDIS_CLAIM_TIMEOUT`.
+- **Connections.** One Redis connection per worker. Count them against the
+  server's `maxclients` alongside the web processes.
+- **Stability of the supervisor itself.** It is a single process that does
+  very little (no Redis connection, no task code), so it is unlikely to
+  fail, but it is not supervised by anything unless you run it under a
+  process manager, and that is the recommended way to run it. If it is
+  killed outright (`SIGKILL`, a crash of the host), the workers are not:
+  they are in a process group of their own and finish their running task,
+  then keep polling until something stops them. Under systemd the default
+  `KillMode=control-group` tears down the whole group with the unit, and in
+  a container the workers die with PID 1, so in both places this is a
+  non-issue; from a bare shell, kill the stragglers by hand. Tasks a hard
+  kill left in `RUNNING` are picked up by the stale-message sweep either
+  way.
+- **What a process manager still does better.** Per-worker health checks
+  and resource limits, log routing per unit, restart policies richer than
+  "replace it, back off if it keeps dying", and rolling restarts.
+  `--workers` is deliberately not a replacement for those; it is the
+  convenience of N workers from one command line. Combining the two, one
+  unit or one container running `--workers N`, is a reasonable middle: the
+  manager handles the machine-level concerns and the supervisor the
+  fan-out.
 
 ## Running from a job scheduler
 

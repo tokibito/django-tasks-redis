@@ -172,25 +172,36 @@ msgstr "要处理的最大任务数（0 = 不限）"
 msgid "Stale task claim interval in seconds (default: 60.0)"
 msgstr "认领停滞任务的间隔秒数（默认：60.0）"
 
-#: management/commands/run_redis_tasks.py:104
+#: management/commands/run_redis_tasks.py:105
+msgid ""
+"Run this many worker processes from one command, each a "
+"copy of this command without --workers. With --continuous "
+"a worker that exits is replaced; without it the command "
+"exits when every worker has (default: 1)"
+msgstr ""
+"从一条命令启动这么多个工作进程，每个都是不带 --workers 的本命令副本。指定 --"
+"continuous 时，退出的工作进程会被替换；未指定时，所有工作进程退出后命令即退出"
+"（默认：1）"
+
+#: management/commands/run_redis_tasks.py:116
 msgid ""
 "Maximum seconds to wait for the running task after receiving SIGTERM/SIGINT "
 "before forcing exit (0=wait indefinitely, default: 0)"
 msgstr "收到 SIGTERM/SIGINT 后、强制退出前等待正在运行的任务的最长秒数（0=无限期等待，默认：0）"
 
-#: management/commands/run_redis_tasks.py:112
+#: management/commands/run_redis_tasks.py:124
 msgid ""
 "Do not install SIGTERM/SIGINT handlers; the process is terminated "
 "immediately, even while a task is running"
 msgstr "不安装 SIGTERM/SIGINT 处理程序；即使有任务正在运行，进程也会立即终止"
 
-#: management/commands/run_redis_tasks.py:122
+#: management/commands/run_redis_tasks.py:134
 msgid ""
 "Exit with this code when no task was processed, so a job scheduler can tell "
 "an idle run from a real one (0=exit normally, default: 0)"
 msgstr "未处理任何任务时以此代码退出，以便作业调度器区分空转的运行与实际的运行（0=正常退出，默认：0）"
 
-#: management/commands/run_redis_tasks.py:133
+#: management/commands/run_redis_tasks.py:145
 msgid ""
 "Exit with this code when at least one task failed or could not be run. Takes "
 "precedence over --empty-exit-code (0=exit normally, default: 0)"

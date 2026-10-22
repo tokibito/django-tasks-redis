@@ -172,25 +172,36 @@ msgstr "処理する最大タスク数 (0 = 無制限)"
 msgid "Stale task claim interval in seconds (default: 60.0)"
 msgstr "古いタスクの奪取間隔（秒）(デフォルト: 60.0)"
 
-#: management/commands/run_redis_tasks.py:104
+#: management/commands/run_redis_tasks.py:105
+msgid ""
+"Run this many worker processes from one command, each a "
+"copy of this command without --workers. With --continuous "
+"a worker that exits is replaced; without it the command "
+"exits when every worker has (default: 1)"
+msgstr ""
+"このコマンドから起動するワーカープロセスの数。各ワーカーは --workers を除いた"
+"このコマンドのコピー。--continuous 指定時は終了したワーカーを再起動し、未指定"
+"時は全ワーカーが終了するとコマンドも終了する (デフォルト: 1)"
+
+#: management/commands/run_redis_tasks.py:116
 msgid ""
 "Maximum seconds to wait for the running task after receiving SIGTERM/SIGINT "
 "before forcing exit (0=wait indefinitely, default: 0)"
 msgstr "SIGTERM/SIGINTを受信してから強制終了するまで、実行中のタスクを待つ最大秒数 (0=無期限に待つ、デフォルト: 0)"
 
-#: management/commands/run_redis_tasks.py:112
+#: management/commands/run_redis_tasks.py:124
 msgid ""
 "Do not install SIGTERM/SIGINT handlers; the process is terminated "
 "immediately, even while a task is running"
 msgstr "SIGTERM/SIGINTハンドラーを設定しない。タスクの実行中でもプロセスは即座に終了する"
 
-#: management/commands/run_redis_tasks.py:122
+#: management/commands/run_redis_tasks.py:134
 msgid ""
 "Exit with this code when no task was processed, so a job scheduler can tell "
 "an idle run from a real one (0=exit normally, default: 0)"
 msgstr "タスクを1件も処理しなかった場合にこの終了コードで終了する。ジョブスケジューラーが空振りの実行を区別できるようにする (0=通常どおり終了、デフォルト: 0)"
 
-#: management/commands/run_redis_tasks.py:133
+#: management/commands/run_redis_tasks.py:145
 msgid ""
 "Exit with this code when at least one task failed or could not be run. Takes "
 "precedence over --empty-exit-code (0=exit normally, default: 0)"

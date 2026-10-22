@@ -21,13 +21,14 @@ import sys
 from contextlib import ExitStack
 from time import monotonic
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.tasks import task_backends
 from django.tasks.base import TaskResultStatus
 from django.utils.translation import gettext as _
 
 from django_tasks_redis.backends import task_log_fields
 from django_tasks_redis.shutdown import GracefulShutdown, signal_name
+from django_tasks_redis.supervisor import worker_log_fields
 from django_tasks_redis.utils import generate_worker_id
 
 logger = logging.getLogger("django_tasks_redis")
@@ -97,6 +98,18 @@ class Command(BaseCommand):
             help=_("Stale task claim interval in seconds (default: 60.0)"),
         )
         parser.add_argument(
+            "--workers",
+            type=int,
+            default=1,
+            metavar="N",
+            help=_(
+                "Run this many worker processes from one command, each a "
+                "copy of this command without --workers. With --continuous "
+                "a worker that exits is replaced; without it the command "
+                "exits when every worker has (default: 1)"
+            ),
+        )
+        parser.add_argument(
             "--shutdown-timeout",
             type=float,
             default=0.0,
@@ -147,10 +160,22 @@ class Command(BaseCommand):
         graceful = not options["no_graceful_shutdown"]
         empty_exit_code = options["empty_exit_code"]
         failed_exit_code = options["failed_exit_code"]
+        workers = options["workers"]
+
+        if workers < 1:
+            raise CommandError("--workers must be at least 1")
 
         backend = task_backends[backend_name]
+
+        if workers > 1:
+            # The options are checked above so that a mistake is reported
+            # once, here, rather than by every worker.
+            self._supervise(options)
+            return
+
         broker = backend.broker
         worker_id = generate_worker_id()
+        worker_index = self._read_worker_index()
 
         # Counted here rather than returned from the loop because a task can
         # fail at several depths (the run itself, the broker message that
@@ -166,6 +191,7 @@ class Command(BaseCommand):
                 "backend_alias": backend_name,
                 "queue_name": queue_name,
                 "continuous": continuous,
+                **worker_log_fields(),
             },
         )
 
@@ -176,6 +202,8 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(f"Starting Redis task worker: {worker_id}")
         )
+        if worker_index is not None:
+            self.stdout.write(f"  Worker index: {worker_index}")
         if queue_name:
             self.stdout.write(f"  Queue: {queue_name}")
         self.stdout.write(f"  Backend: {backend_name}")
@@ -239,6 +267,7 @@ class Command(BaseCommand):
                 "tasks_processed": tasks_processed,
                 "tasks_failed": self.tasks_failed,
                 "exit_code": exit_code,
+                **worker_log_fields(),
             },
         )
 
@@ -253,6 +282,55 @@ class Command(BaseCommand):
         if self.tasks_failed:
             self.stdout.write(self.style.ERROR(f"Tasks failed: {self.tasks_failed}"))
 
+        if exit_code:
+            sys.exit(exit_code)
+
+    def _read_worker_index(self):
+        """
+        Read the worker index once, for every record this worker writes.
+
+        A value that is not an index is reported and ignored rather than
+        refused: it only labels the log records, and a worker that will
+        not start over a label is worse than one that runs without it.
+        """
+        from django_tasks_redis.supervisor import (
+            read_worker_index,
+            set_worker_index,
+        )
+
+        try:
+            index = read_worker_index()
+        except ValueError as e:
+            index = None
+            logger.warning("Ignoring the worker index: %s", e)
+            self.stdout.write(self.style.WARNING(f"Ignoring the worker index: {e}"))
+        set_worker_index(index)
+        return index
+
+    def _supervise(self, options):
+        """
+        Run ``--workers`` copies of this command and wait for them.
+
+        Each worker is this command run again without ``--workers``, so
+        every other option reaches it unchanged, and it is exactly the
+        single-process worker: its own worker id, its own consumer in the
+        group, its own ``Worker started`` and ``Worker finished`` records.
+        """
+        from django_tasks_redis.supervisor import WorkerSupervisor, worker_arguments
+
+        supervisor = WorkerSupervisor(
+            worker_arguments(),
+            options["workers"],
+            restart=options["continuous"],
+            graceful=not options["no_graceful_shutdown"],
+            shutdown_timeout=options["shutdown_timeout"],
+            empty_exit_code=options["empty_exit_code"],
+            failed_exit_code=options["failed_exit_code"],
+            stdout=self.stdout,
+            style=self.style,
+            verbosity=options["verbosity"],
+        )
+        exit_code = supervisor.run()
         if exit_code:
             sys.exit(exit_code)
 
@@ -312,6 +390,7 @@ class Command(BaseCommand):
                         "worker_id": worker_id,
                         "backend_alias": backend.alias,
                         "queue_name": queue_name,
+                        **worker_log_fields(),
                     },
                 )
                 self.stderr.write(

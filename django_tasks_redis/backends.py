@@ -20,6 +20,7 @@ from django.utils.json import normalize_json
 
 from .brokers import RedisStreamsBroker
 from .exceptions import TaskAbandoned
+from .supervisor import worker_log_fields
 from .utils import (
     deserialize_datetime,
     deserialize_json,
@@ -54,7 +55,8 @@ def task_log_fields(task_data, worker_id=None, **extra):
 
     These are the fields an operator filters on once the records go through
     a structured (JSON) formatter, so they are kept flat and named apart
-    from LogRecord's own attributes.
+    from LogRecord's own attributes. ``pid`` and, under ``--workers``,
+    ``worker_index`` join them with the supervisor's records.
 
     Args:
         task_data: The Redis hash dict for the task, or anything that maps
@@ -73,6 +75,7 @@ def task_log_fields(task_data, worker_id=None, **extra):
         "priority": _priority_as_int(task_data.get("priority")),
         "backend_alias": task_data.get("backend_name"),
         "worker_id": worker_id,
+        **worker_log_fields(),
     }
     fields.update(extra)
     return fields

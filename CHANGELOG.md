@@ -4,6 +4,29 @@
 
 ### Added
 
+- **`--workers N` on `run_redis_tasks`.** The command keeps N worker
+  processes running from one invocation. Each worker is the command run
+  again without `--workers`, so every other option reaches it unchanged and
+  it is the single-process worker it has always been, with its own worker
+  id and consumer in the group. With `--continuous` a worker that exits is
+  replaced, after a growing delay for one that keeps failing right after
+  starting, and one `Every worker is failing to start` WARNING when they
+  all do at once. `SIGTERM`/`SIGINT` are forwarded to the workers and
+  waited for within `--shutdown-timeout`, a second signal kills them,
+  `SIGTTIN` and `SIGTTOU` add and remove a worker on POSIX, and the exit
+  code is decided from what the workers reported, honouring
+  `--empty-exit-code` and `--failed-exit-code`. `--max-tasks` with
+  `--continuous` replaces a worker after that many tasks, the way
+  gunicorn's `max_requests` does. Every record a worker writes carries
+  `pid` and, under `--workers`, the `worker_index` of its slot, so it joins
+  with the supervisor's records on `pid`. The supervisor,
+  `django_tasks_redis.supervisor`, is the one django-database-task ships as
+  `django_database_task.supervisor`. The README's new *Running several
+  workers* section sets it beside systemd, Kubernetes and supervisord and
+  spells out the trade-offs, among them that N workers are N stale-message
+  sweeps per `--claim-interval`. The default is 1, the single process the
+  command has always been, so existing projects need no changes.
+  ([#44](https://github.com/tokibito/django-tasks-redis/issues/44))
 - **`GET /tasks/status/` serves the queue statistics.** Without a task id,
   the status endpoint returns the dict of `get_queue_stats()` as JSON, the
   datetimes as ISO 8601 strings, scoped to one queue with `?queue_name=`. It

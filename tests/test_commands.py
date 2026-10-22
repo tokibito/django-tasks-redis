@@ -527,3 +527,87 @@ class TestCommandHelp:
 
         assert self.COMMANDS[name] in help_text
         assert "--backend" in help_text
+
+
+# What --workers runs in place of the real command here: a process that exits
+# with the code it is given. test_supervisor.py covers the supervisor itself
+# and tests/test_workers.py the real workers.
+STUB_WORKER = "import sys; sys.exit(int(sys.argv[1]))"
+
+
+def stub_worker(code):
+    return [sys.executable, "-c", STUB_WORKER, str(code)]
+
+
+@pytest.mark.django_db
+class TestRunRedisTasksWorkers:
+    """The --workers option: what the command checks, and what it passes on."""
+
+    def run_workers(self, code=0, **options):
+        from unittest import mock
+
+        out = StringIO()
+        with mock.patch(
+            "django_tasks_redis.supervisor.worker_arguments",
+            return_value=stub_worker(code),
+        ):
+            call_command("run_redis_tasks", stdout=out, stderr=out, **options)
+        return out.getvalue()
+
+    def test_workers_must_be_positive(self):
+        from django.core.management.base import CommandError
+
+        with pytest.raises(CommandError, match="--workers must be at least 1"):
+            call_command("run_redis_tasks", workers=0, stdout=StringIO())
+
+    def test_one_worker_is_the_command_itself(self, clean_redis):
+        """The default is the single process the command has always been."""
+        from tests.tasks import simple_task
+
+        result = simple_task.enqueue(1, 2)
+        out = StringIO()
+
+        call_command("run_redis_tasks", workers=1, stdout=out)
+
+        output = out.getvalue()
+        assert "Starting Redis task worker:" in output
+        assert "Workers:" not in output
+        assert executor.get_task_by_id(result.id)["status"] == (
+            TaskResultStatus.SUCCESSFUL
+        )
+
+    def test_the_workers_are_the_command_run_again(self):
+        output = self.run_workers(workers=2)
+
+        assert "Workers: 2" in output
+        assert "Worker 1 started" in output
+        assert "Worker 2 started" in output
+        assert "Every worker has exited." in output
+        # The parent supervises; it does not run tasks itself.
+        assert "Starting Redis task worker:" not in output
+
+    def test_the_workers_exit_codes_become_the_commands(self):
+        with pytest.raises(SystemExit) as exc_info:
+            self.run_workers(code=4, workers=2, empty_exit_code=4)
+        assert exc_info.value.code == 4
+
+        with pytest.raises(SystemExit) as exc_info:
+            self.run_workers(code=1, workers=2, failed_exit_code=1)
+        assert exc_info.value.code == 1
+
+    def test_a_normal_exit_of_every_worker_exits_normally(self):
+        self.run_workers(code=0, workers=2, empty_exit_code=4, failed_exit_code=1)
+
+    @posix_signals
+    def test_continuous_restarts_the_workers_until_a_signal(self):
+        def stop():
+            time.sleep(1)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        threading.Thread(target=stop, daemon=True).start()
+        output = self.run_workers(workers=2, continuous=True)
+
+        assert "Workers that exit are restarted." in output
+        assert "; restarting." in output
+        assert "Received SIGTERM: stopping" in output
+        assert "Shutdown complete: every worker exited." in output

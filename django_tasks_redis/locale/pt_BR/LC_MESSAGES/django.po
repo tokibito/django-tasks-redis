@@ -172,25 +172,37 @@ msgstr "Número máximo de tarefas a processar (0 = ilimitado)"
 msgid "Stale task claim interval in seconds (default: 60.0)"
 msgstr "Intervalo em segundos para reivindicar tarefas paradas (padrão: 60.0)"
 
-#: management/commands/run_redis_tasks.py:104
+#: management/commands/run_redis_tasks.py:105
+msgid ""
+"Run this many worker processes from one command, each a "
+"copy of this command without --workers. With --continuous "
+"a worker that exits is replaced; without it the command "
+"exits when every worker has (default: 1)"
+msgstr ""
+"Executa esta quantidade de processos worker a partir de um único comando, "
+"cada um uma cópia deste comando sem --workers. Com --continuous, um worker "
+"que sai é substituído; sem ele, o comando termina quando todos os workers "
+"terminarem (padrão: 1)"
+
+#: management/commands/run_redis_tasks.py:116
 msgid ""
 "Maximum seconds to wait for the running task after receiving SIGTERM/SIGINT "
 "before forcing exit (0=wait indefinitely, default: 0)"
 msgstr "Tempo máximo, em segundos, de espera pela tarefa em execução após receber SIGTERM/SIGINT antes de forçar a saída (0=esperar indefinidamente, padrão: 0)"
 
-#: management/commands/run_redis_tasks.py:112
+#: management/commands/run_redis_tasks.py:124
 msgid ""
 "Do not install SIGTERM/SIGINT handlers; the process is terminated "
 "immediately, even while a task is running"
 msgstr "Não instala manipuladores de SIGTERM/SIGINT; o processo é encerrado imediatamente, mesmo com uma tarefa em execução"
 
-#: management/commands/run_redis_tasks.py:122
+#: management/commands/run_redis_tasks.py:134
 msgid ""
 "Exit with this code when no task was processed, so a job scheduler can tell "
 "an idle run from a real one (0=exit normally, default: 0)"
 msgstr "Sai com este código quando nenhuma tarefa foi processada, para que um agendador de jobs distinga uma execução ociosa de uma real (0=sair normalmente, padrão: 0)"
 
-#: management/commands/run_redis_tasks.py:133
+#: management/commands/run_redis_tasks.py:145
 msgid ""
 "Exit with this code when at least one task failed or could not be run. Takes "
 "precedence over --empty-exit-code (0=exit normally, default: 0)"
